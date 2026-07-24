@@ -1,3 +1,5 @@
+# ====================== c++ =======================
+
 # Prerequisites
 *.d
 
@@ -39,10 +41,8 @@
 *.out
 *.app
 
-# Build directories
-build/
-Build/
-build-*/
+# Build directories, only root/build
+/build/
 
 # CMake generated files
 CMakeFiles/
@@ -67,3 +67,10 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# ====================== append =======================
+
+__pycache__/
+.vscode/
+.env
+*.testresult.json

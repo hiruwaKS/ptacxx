@@ -1,0 +1,18 @@
+# ignore docker storage & build artifacts
+data/
+**/build/
+**/.git/
+
+# ignore common IDE / OS files
+.vscode/
+.idea/
+__pycache__/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ignore git data (submodule .git dirs are not needed)
+.git/
+.gitattributes
+.gitignore

@@ -1,0 +1,15 @@
+services:
+  dev:
+    build: .
+    image: repos:latest
+    volumes:
+      - .:/repos
+    working_dir: /repos
+    stdin_open: true
+    tty: true
+    environment:
+      - PROJECT_ROOT=/repos
+      - LLVM14_DIR=/opt/llvm-14
+      - LLVM21_DIR=/opt/llvm-21
+    entrypoint:
+    command: /bin/bash
