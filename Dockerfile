@@ -4,6 +4,7 @@
 # Stage 1: base (Source Management & Download Tools)
 # Purpose: Provides lightweight tools needed for cloning & downloading
 # =========================================================
+RUN sh -c 'echo "Docker setup is a TODO. See `README.md` notes" && exit 1'
 FROM ubuntu:22.04 AS base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

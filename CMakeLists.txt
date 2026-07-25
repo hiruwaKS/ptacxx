@@ -1,52 +1,85 @@
 cmake_minimum_required(VERSION 3.15)
 project(Ptacxx)
 
-# =========================================================
-# Stage 1: llvm check and build path check
-# =========================================================
+set(CMAKE_CXX_STANDARD 17)
 
-if(NOT DEFINED LLVM_DIR)
-    message(FATAL_ERROR "LLVM_DIR is not set")
-endif()
+get_filename_component(BINARY_DIR_NAME ${CMAKE_BINARY_DIR} NAME)
+message(STATUS "BINARY_DIR_NAME: ${BINARY_DIR_NAME}")
 
-if(NOT EXISTS ${LLVM_DIR})
-    message(FATAL_ERROR "LLVM_DIR does not exist: ${LLVM_DIR}")
-endif()
+if (BINARY_DIR_NAME STREQUAL "lotus")
+  if (NOT EXISTS "${LOTUS_BINARY_DIR}" OR NOT EXISTS "${LLVM_DIR}")
+    message(FATAL_ERROR "LOTUS_BINARY_DIR or LLVM_DIR not found")
+  endif ()
+  find_package(LLVM REQUIRED CONFIG PATHS ${LLVM_DIR} NO_DEFAULT_PATH)
+  if (NOT LLVM_VERSION_MAJOR EQUAL 14)
+    message(FATAL_ERROR "LLVM version 14 != ${LLVM_VERSION_MAJOR}")
+  endif ()
+  message(STATUS "LLVM version check - ok")
 
-get_filename_component(LLVM_DIR_NAME ${LLVM_DIR} NAME)
+  set(LOTUS_LIB_DIR ${LOTUS_BINARY_DIR}/lib)
+  get_filename_component(LOTUS_INCLUDE_DIR ${LOTUS_BINARY_DIR}/../include ABSOLUTE)
+  set(_LOTUS_LIBS
+    CanaryAliasAnalysisWrapper SVFG CanaryICFG AserPTA CanaryDynamicAA
+    CanaryAliasCLIUtils AliasSpecManager)
+  foreach(lib ${_LOTUS_LIBS})
+    if (NOT EXISTS "${LOTUS_LIB_DIR}/lib${lib}.a")
+      message(FATAL_ERROR "Lotus library (lib${lib}.a) not found in ${LOTUS_LIB_DIR}")
+    endif ()
+  endforeach()
+  message(STATUS "Lotus libs check in ${LOTUS_LIB_DIR} - ok")
 
-if(NOT EXISTS ${LLVM_DIR}/llvm/CMakeLists.txt AND NOT EXISTS ${LLVM_DIR}/bin/llvm-link)
-    message(FATAL_ERROR "LLVM_DIR is not a valid LLVM source tree (missing llvm/CMakeLists.txt) or prebuilt (missing bin/llvm-link): ${LLVM_DIR}")
-endif()
+elseif (BINARY_DIR_NAME STREQUAL "svf")
+  if (NOT EXISTS "${SVF_BINARY_DIR}" OR NOT EXISTS "${LLVM_DIR}")
+    message(FATAL_ERROR "SVF_BINARY_DIR or LLVM_DIR not found")
+  endif ()
+  find_package(LLVM REQUIRED CONFIG PATHS ${LLVM_DIR} NO_DEFAULT_PATH)
+  if (LLVM_VERSION_MAJOR LESS 16)
+    message(FATAL_ERROR "LLVM version 16 > ${LLVM_VERSION_MAJOR}")
+  endif ()
+  message(STATUS "LLVM version check - ok")
 
-get_filename_component(CURRENT_DIR ${CMAKE_BINARY_DIR} NAME)
+  find_package(SVF REQUIRED CONFIG HINTS  ${SVF_BINARY_DIR})
 
-if(CURRENT_DIR MATCHES "^llvm([0-9]+)(\\.[0-9]+\\.[0-9]+)?$")
-    set(LLVM_VERSION ${CMAKE_MATCH_1})
-    if(CMAKE_MATCH_2)
-        string(SUBSTRING ${CURRENT_DIR} 4 -1 LLVM_VERSION_FULL)
-        message(STATUS "Building for ${CURRENT_DIR} (full version: ${LLVM_VERSION_FULL})")
-    else()
-        message(STATUS "Building for ${CURRENT_DIR} (major version: ${LLVM_VERSION})")
-    endif()
-    
-    if(DEFINED LLVM_DIR)
-        get_filename_component(LLVM_DIR_NAME ${LLVM_DIR} NAME)
-        if(LLVM_DIR_NAME MATCHES "llvm[-_]?([0-9]+)")
-            set(LLVM_DIR_VERSION ${CMAKE_MATCH_1})
-            if(NOT LLVM_DIR_VERSION EQUAL LLVM_VERSION)
-                message(FATAL_ERROR "LLVM_DIR version (${LLVM_DIR_VERSION}) does not match build directory version (${LLVM_VERSION})")
-            endif()
-        else()
-            message(FATAL_ERROR "Could not detect LLVM version from LLVM_DIR: ${LLVM_DIR}")
-        endif()
-    endif()
-    
-else()
-    message(FATAL_ERROR "Current directory must be named like llvm14, llvm21, got: ${CURRENT_DIR}")
-endif()
+endif ()
 
-# =========================================================
-# Stage 2: config
-# =========================================================
+message(STATUS "LLVM version: ${LLVM_VERSION}")
+message(STATUS "LLVM tools binary dir: ${LLVM_TOOLS_BINARY_DIR}")
 
+set(_LLVM_TOOLS clang-${LLVM_VERSION_MAJOR} llvm-ar llvm-objcopy llvm-link llvm-dis llvm-nm)
+foreach(_tool ${_LLVM_TOOLS})
+  find_program(${_tool}_EXECUTABLE NAMES ${_tool} PATHS ${LLVM_TOOLS_BINARY_DIR} NO_DEFAULT_PATH)
+  if (NOT ${_tool}_EXECUTABLE)
+    message(FATAL_ERROR "${_tool} not found in ${LLVM_TOOLS_BINARY_DIR}")
+  endif ()
+endforeach()
+unset(_LLVM_TOOLS)
+unset(_tool)
+set(_TC ${CMAKE_BINARY_DIR}/tests/toolchain)
+file(REMOVE_RECURSE ${_TC})
+file(MAKE_DIRECTORY ${_TC})
+set(CL "${LLVM_TOOLS_BINARY_DIR}/clang-${LLVM_VERSION_MAJOR}")
+set(AR "${LLVM_TOOLS_BINARY_DIR}/llvm-ar")
+set(_LLVM_BC_TOOLS
+"${LLVM_TOOLS_BINARY_DIR}/llvm-objcopy" "${LLVM_TOOLS_BINARY_DIR}/llvm-link" "${LLVM_TOOLS_BINARY_DIR}/llvm-dis"
+"${LLVM_TOOLS_BINARY_DIR}/llvm-nm" "${LLVM_TOOLS_BINARY_DIR}/clang++" "${LLVM_TOOLS_BINARY_DIR}/llc")
+foreach(_tool ${_LLVM_BC_TOOLS})
+if (NOT EXISTS "${_tool}")
+  message(FATAL_ERROR "${_tool} not found in ${LLVM_TOOLS_BINARY_DIR}")
+endif ()
+endforeach()
+unset(_LLVM_BC_TOOLS)
+
+execute_process(
+COMMAND sh -c "${CL} -c ${CMAKE_SOURCE_DIR}/tests/toolchain/m1.cpp -o ${_TC}/m1.o -flto -fPIE && \
+                ${CL} -c ${CMAKE_SOURCE_DIR}/tests/toolchain/m2.c -o ${_TC}/m2.o -flto -fPIE && \
+                ${AR} rcs ${_TC}/toolchain.a ${_TC}/m1.o ${_TC}/m2.o && \
+                ${CMAKE_COMMAND} -E env LLVM_TOOLS_DIR=${LLVM_TOOLS_BINARY_DIR} \
+                bash ${CMAKE_SOURCE_DIR}/scripts/a2bc.sh ${_TC}/toolchain.a >/dev/null && \
+                ${LLVM_TOOLS_BINARY_DIR}/llc -relocation-model=pic -filetype=obj ${_TC}/toolchain.bc -o ${_TC}/toolchain_run.o && \
+                ${LLVM_TOOLS_BINARY_DIR}/clang++ ${_TC}/toolchain_run.o -o ${_TC}/run_test && \
+                ${_TC}/run_test > ${_TC}/output.txt && \
+                printf '%s\n' '[C] sum=55 val=100 str=TEST123ABC big=18446744073709551615 arr=0 2 4 6 8 ' | diff - ${_TC}/output.txt"
+COMMAND_ERROR_IS_FATAL ANY
+)
+unset(_TC)
+message(STATUS "Toolchain check - ok")
