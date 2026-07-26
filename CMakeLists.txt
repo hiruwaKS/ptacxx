@@ -2,6 +2,14 @@ cmake_minimum_required(VERSION 3.15)
 project(Ptacxx)
 
 set(CMAKE_CXX_STANDARD 17)
+add_compile_options(
+  -Weverything
+  -Werror
+  -Wno-system-headers
+  -Wno-c++98-compat
+  -Wno-c++98-compat-extra-semi
+  -Wno-padded
+)
 
 get_filename_component(BINARY_DIR_NAME ${CMAKE_BINARY_DIR} NAME)
 message(STATUS "BINARY_DIR_NAME: ${BINARY_DIR_NAME}")
@@ -25,7 +33,13 @@ if (BINARY_DIR_NAME STREQUAL "lotus")
     if (NOT EXISTS "${LOTUS_LIB_DIR}/lib${lib}.a")
       message(FATAL_ERROR "Lotus library (lib${lib}.a) not found in ${LOTUS_LIB_DIR}")
     endif ()
+    add_library(lotus::${lib} UNKNOWN IMPORTED)
+    set_target_properties(lotus::${lib} PROPERTIES
+      INTERFACE_LINK_LIBRARIES "${LOTUS_LIB_DIR}/lib${lib}.a"
+      INTERFACE_INCLUDE_DIRECTORIES "${LOTUS_INCLUDE_DIR}"
+    )
   endforeach()
+  unset(_LOTUS_LIBS)
   message(STATUS "Lotus libs check in ${LOTUS_LIB_DIR} - ok")
 
 elseif (BINARY_DIR_NAME STREQUAL "svf")
@@ -40,6 +54,8 @@ elseif (BINARY_DIR_NAME STREQUAL "svf")
 
   find_package(SVF REQUIRED CONFIG HINTS  ${SVF_BINARY_DIR})
 
+else()
+  message(FATAL_ERROR "BINARY_DIR_NAME must be 'lotus' or 'svf', got '${BINARY_DIR_NAME}'")
 endif ()
 
 message(STATUS "LLVM version: ${LLVM_VERSION}")
@@ -83,3 +99,7 @@ COMMAND_ERROR_IS_FATAL ANY
 )
 unset(_TC)
 message(STATUS "Toolchain check - ok")
+
+include(cmake/modules/post_build.cmake)
+
+add_subdirectory(src)

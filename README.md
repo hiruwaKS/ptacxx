@@ -10,6 +10,8 @@
 
 ```bash
 cmake -B /path/to/build/lotus -S . \
+      -DCMAKE_C_COMPILER=/usr/bin/clang \
+      -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
       -DLLVM_DIR=... \
       -DLOTUS_BINARY_DIR=...
 ```
@@ -18,6 +20,8 @@ cmake -B /path/to/build/lotus -S . \
 
 ```bash
 cmake -B /path/to/build/svf -S . \
+      -DCMAKE_C_COMPILER=/usr/bin/clang \
+      -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
       -DLLVM_DIR=... \
       -DSVF_BINARY_DIR=...
 ```
