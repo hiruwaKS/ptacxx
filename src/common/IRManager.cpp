@@ -119,8 +119,8 @@ void IRManager::traverseModule(ModuleData &data, std::unique_ptr<llvm::Module> p
       }
     }
     ++globalIdx;
- }
- data._irStat.funcCnt = funcCnt;
+  }
+  data._irStat.funcCnt = funcCnt;
   data._metadata.metadata = getLLVMIRMetadataString(M);
 }
 
@@ -155,7 +155,11 @@ std::string IRManager::getLLVMIRMetadataString(const llvm::Module &M) const {
 
   append("moduleID", M.getModuleIdentifier());
   append("sourceFileName", M.getSourceFileName());
+  #if LLVM_VERSION_MAJOR >= 15
+  append("targetTriple", M.getTargetTriple().getTriple());
+  #else
   append("targetTriple", M.getTargetTriple());
+  #endif
   append("dataLayout", M.getDataLayout().getStringRepresentation());
 
   std::string s;
@@ -209,7 +213,7 @@ DebugInfo IRManager::getValueDebugInfo(const llvm::Value *V) const {
 
   auto pr = [&](const llvm::Value *Val, const char *kind) {
     os << kind << ":" << *Val->getType() << "\n";
-#if LLVM_VERSION_MAJOR >= 14
+#if LLVM_VERSION_MAJOR == 14
     if (auto *PT = llvm::dyn_cast<llvm::PointerType>(Val->getType())) {
       if (PT->isOpaque()) os << " (opaque)";
     }

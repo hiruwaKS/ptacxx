@@ -1,0 +1,9 @@
+{
+    global:
+        __hook_init;
+        __hook_push;
+        __hook_dump;
+
+    local:
+        *;
+};

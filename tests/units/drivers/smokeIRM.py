@@ -25,6 +25,11 @@ def _vid_with_local(vid, local_idx):
     parts[-1] = str(local_idx)
     return ":".join(parts)
 
+def _llvm_major(clang_bin):
+    out = subprocess.run(f"{clang_bin} -dumpversion", shell=True,
+                         capture_output=True, text=True)
+    return int(out.stdout.strip().split(".")[0])
+
 def testInput1(irm_bin, clang_bin, src):
     with tempfile.TemporaryDirectory(prefix="irm_smoke_") as d:
         bc = _compile_to_bc(clang_bin, src, d)
@@ -59,6 +64,7 @@ def testInput1(irm_bin, clang_bin, src):
         assert "main" in out and "smokeIRMInput.cpp" in out
 
 def testInput2(irm_bin, clang_bin, src):
+    ver = _llvm_major(clang_bin)
     with tempfile.TemporaryDirectory(prefix="irm_smoke_") as d:
         bc = _compile_to_bc(clang_bin, src, d)
         
@@ -73,11 +79,13 @@ def testInput2(irm_bin, clang_bin, src):
         
         out = _query_irm(irm_bin, bc, f"debug {_vid_with_local(vid, 1)}")
         print(f"> debug {_vid_with_local(vid, 1)}:\n{out}\n")
-        assert "%0" in out and "Argument:i32*" in out
+        assert "%0" in out
+        assert "Argument:i32*" in out if ver < 15 else "Argument:ptr" in out
         
         out = _query_irm(irm_bin, bc, f"debug {_vid_with_local(vid, 2)}")
         print(f"> debug {_vid_with_local(vid, 2)}:\n{out}\n")
-        assert "%2" in out and "Instruction:i32**" in out
+        assert "%2" in out
+        assert "Instruction:i32**" in out if ver < 15 else "Instruction:ptr" in out
         
         out = _query_irm(irm_bin, bc, "stat")
         print(f"> stat:\n{out}\n")

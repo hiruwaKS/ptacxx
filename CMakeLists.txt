@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.15)
 project(Ptacxx)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 add_compile_options(
   -Weverything
   -Werror
@@ -9,6 +9,7 @@ add_compile_options(
   -Wno-c++98-compat
   -Wno-c++98-compat-extra-semi
   -Wno-padded
+  -Wno-reserved-identifier
 )
 
 get_filename_component(BINARY_DIR_NAME ${CMAKE_BINARY_DIR} NAME)
