@@ -16,7 +16,7 @@ static llvm::cl::opt<std::string>
     IRPath(llvm::cl::Positional, llvm::cl::desc("<ir-path>"),
            llvm::cl::Optional);
 static llvm::cl::list<std::string>
-    StubLibPath("stubl", llvm::cl::desc("stub library names"));
+    StubLibs("stubl", llvm::cl::desc("stub library names"));
 static llvm::cl::opt<std::string>
     LibBasePath("libbase", llvm::cl::desc("where libs can be found"),
            llvm::cl::ValueRequired);
@@ -31,9 +31,9 @@ private:
     _irm = std::make_unique<IRManager>(LibBasePath);
     if (!IRPath.empty())
       _irm->addMainModule(IRPath);
-    for (const auto &lib : StubLibPath)
+    for (const auto &lib : StubLibs)
       _irm->addLibModule(lib);
-    if (IRPath.empty() && StubLibPath.empty()) llvm::report_fatal_error("no input");
+    if (IRPath.empty() && StubLibs.empty()) llvm::report_fatal_error("no input");
   }
   std::string _handle_query_impl(const std::string &req){
     PAQuery query = parse(req, *_irm);

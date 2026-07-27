@@ -1,5 +1,6 @@
 #include "IRManager.h"
 #include "hooklibs.h"
+#include "LLVMUtils.h"
 
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Function.h>
@@ -35,30 +36,36 @@ void IRManager::addModuleBase(const std::string &irPath, const int16_t moduleIdx
     throw std::runtime_error("IRManager: lib module can't have main function");
 }
 
-void IRManager::addMainModule(const std::string &irPath) {
+int16_t IRManager::addMainModule(const std::string &irPath) {
   if (irPath.empty())
     throw std::runtime_error("IRManager: irPath is empty");
   addModuleBase(irPath, 0);
+  return 0;
 }
 
-void IRManager::addLibModule(const int16_t moduleIdx) {
+int16_t IRManager::addLibModule(const int16_t moduleIdx) {
   if (!moduleIdx || moduleIdx >= static_cast<int16_t>(HOOKLIBS_SIZE)) 
     throw std::runtime_error("IRManager: invalid moduleIdx");
   
   auto irPath = _libBasePath + HOOKLIBS.at(static_cast<size_t>(moduleIdx)) + ".bc";
   addModuleBase(irPath, moduleIdx);
+  return moduleIdx;
 }
 
-void IRManager::addLibModule(const std::string &libName) {
-  for (size_t i = 0; i < HOOKLIBS_SIZE; ++i)
-    if (libName == HOOKLIBS.at(i)) 
-      return addLibModule(static_cast<int16_t>(i + 1));
-  throw std::runtime_error("IRManager: unknown '" + libName + "'");
+int16_t IRManager::libNameToModuleIdx(const std::string &libName) {
+  for (size_t i = 1; i < HOOKLIBS_SIZE; ++i)
+    if (libName == HOOKLIBS.at(i))
+      return static_cast<int16_t>(i);
+  throw std::runtime_error("IRManager: unknown lib '" + libName +
+    "'. Fix: add a driver, or register in hooklibs.h (only for libs used by the tested main module)");
 }
 
 void IRManager::traverseModule(ModuleData &data, std::unique_ptr<llvm::Module> pM, const int16_t moduleIdx) {
   data._module = std::move(pM);
   auto &M = *data._module;
+  data._targetTriple = llvm::Triple(M.getTargetTriple());
+  data._TLII = std::make_unique<llvm::TargetLibraryInfoImpl>(data._targetTriple);
+  data._TLI = std::make_unique<llvm::TargetLibraryInfo>(*data._TLII);
   data._irStat.hasMain = M.getFunction("main") != nullptr;
   data._irStat.hasGlobalCtor = M.getNamedGlobal("llvm.global_ctors") != nullptr;
   data._irStat.hasGlobalDtor = M.getNamedGlobal("llvm.global_dtors") != nullptr;
@@ -66,6 +73,9 @@ void IRManager::traverseModule(ModuleData &data, std::unique_ptr<llvm::Module> p
   int16_t funcCnt = 0;
 
   for (auto &GV : M.globals()) {
+    if (GV.isDeclaration()) continue;
+    if (llvmSkip(&GV)) continue;
+    
     VId vid{moduleIdx, globalIdx, 0};
     _vidToValueCache[vid] = &GV;
     _valueToVidCache[&GV] = vid;
@@ -83,6 +93,8 @@ void IRManager::traverseModule(ModuleData &data, std::unique_ptr<llvm::Module> p
   data._irStat.globalCnt = globalIdx;
 
   for (auto &F : M) {
+    if (F.isDeclaration()) continue;
+    if (llvmSkip(&F)) continue;
     ++funcCnt;
 
     VId funcVid{moduleIdx, globalIdx, 0};
@@ -214,6 +226,7 @@ DebugInfo IRManager::getValueDebugInfo(const llvm::Value *V) const {
   auto pr = [&](const llvm::Value *Val, const char *kind) {
     os << kind << ":" << *Val->getType() << "\n";
 #if LLVM_VERSION_MAJOR == 14
+    // check opaque pointer
     if (auto *PT = llvm::dyn_cast<llvm::PointerType>(Val->getType())) {
       if (PT->isOpaque()) os << " (opaque)";
     }

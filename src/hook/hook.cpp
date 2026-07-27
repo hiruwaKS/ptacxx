@@ -19,5 +19,6 @@ void __hook_push(PtrRecord record) {
 #pragma clang diagnostic pop
 
 void __hook_dump(const char *dumpPath) {
+  PtaHook::stopAndConsume();
   PtaHook::dump(dumpPath);
 }

@@ -17,7 +17,7 @@ void PtaHook::stopAndConsume(){
     auto &record = buffer_span[i];
     switch (record.action) {
       case PTR_ACTION_ALLOCA: {
-        auto addr = static_cast<uintptr_t>(record.ptr);
+        auto addr = record.ptr;
         Instance().ptrToVid[addr] = {
           VId{record.moduleIdx, record.globalIdx, record.localIdx}, record.size};
         Instance().scopeStack.back().second.push_back(addr);
@@ -25,18 +25,18 @@ void PtaHook::stopAndConsume(){
       }
       case PTR_ACTION_HEAP_ALLOCA:
       case PTR_ACTION_REGION: {
-        auto addr = static_cast<uintptr_t>(record.ptr);
+        auto addr = record.ptr;
         Instance().ptrToVid[addr] = {
           VId{record.moduleIdx, record.globalIdx, record.localIdx}, record.size};
         break;
       }
       case PTR_ACTION_HEAP_FREE: {
-        auto addr = static_cast<uintptr_t>(record.ptr);
+        auto addr = record.ptr;
         Instance().ptrToVid.erase(addr);
         break;
       }
       case PTR_ACTION_PROBE: {
-        auto addr = static_cast<uintptr_t>(record.ptr);
+        auto addr = record.ptr;
         auto it = Instance().ptrToVid.upper_bound(addr);
         if (it == Instance().ptrToVid.begin()) continue;
         --it;
@@ -57,7 +57,7 @@ void PtaHook::stopAndConsume(){
       case PTR_ACTION_BEGINSCOPE: {
         Instance().scopeStack.push_back({
           VId{record.moduleIdx, record.globalIdx, record.localIdx},
-          std::vector<uintptr_t>()
+          std::vector<uint64_t>()
         });
         break;
       }
@@ -65,6 +65,16 @@ void PtaHook::stopAndConsume(){
         for (auto addr : Instance().scopeStack.back().second)
           Instance().ptrToVid.erase(addr);
         Instance().scopeStack.pop_back();
+        break;
+      }
+      case PTR_ACTION_LANDING: {
+        VId landingVid{record.moduleIdx, record.globalIdx, record.localIdx};
+        while (!Instance().scopeStack.empty() &&
+                !(Instance().scopeStack.back().first == landingVid)) {
+          for (auto addr : Instance().scopeStack.back().second)
+            Instance().ptrToVid.erase(addr);
+          Instance().scopeStack.pop_back();
+        }
         break;
       }
       default:
@@ -80,14 +90,35 @@ void PtaHook::dump(const char *dumpPath) {
     std::fprintf(stderr, "PtaHook: cannot open dump file '%s'\n", dumpPath);
     return;
   }
-  std::vector<std::pair<VId, std::set<std::pair<VId, std::vector<VId>>>>>
-    sorted_vec(Instance().pts.begin(), Instance().pts.end());
-  std::sort(sorted_vec.begin(), sorted_vec.end());
-  for (auto &[id, targets] : sorted_vec) {
-    std::fprintf(f, "%d:%d:%d", id.moduleIdx, id.globalIdx, id.localIdx);
-    for (auto &t : targets)
-      std::fprintf(f, " %d:%d:%d", t.first.moduleIdx, t.first.globalIdx, t.first.localIdx);
-    std::fprintf(f, "\n");
+  auto vidToString = [](VId v) {
+    return std::to_string(v.moduleIdx) + ":" +
+           std::to_string(v.globalIdx) + ":" +
+           std::to_string(v.localIdx);
+  };
+  std::vector<VId> keys;
+  keys.reserve(Instance().pts.size());
+  for (auto &[id, _] : Instance().pts) keys.push_back(id);
+  std::sort(keys.begin(), keys.end());
+  std::string buf;
+  buf.reserve(1024*1024);
+  for (auto &k : keys) {
+    auto it = Instance().pts.find(k);
+    if (it == Instance().pts.end()) continue;
+    buf += vidToString(k);
+    for (auto &[t, ctx] : it->second) {
+      buf += " " + vidToString(t);
+      if (!ctx.empty()) {
+        buf += " {";
+        for (auto &c : ctx) buf += " " + vidToString(c);
+        buf += " }";
+      }
+    }
+    buf += "\n";
+    if (buf.size() >= 1024*1024) {
+      fwrite(buf.data(), 1, buf.size(), f);
+      buf.clear();
+    }
   }
+  if (!buf.empty()) fwrite(buf.data(), 1, buf.size(), f);
   fclose(f);
 }

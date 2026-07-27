@@ -17,3 +17,4 @@ static constexpr int16_t PTR_ACTION_REGION      = 3;
 static constexpr int16_t PTR_ACTION_PROBE       = 8;
 static constexpr int16_t PTR_ACTION_BEGINSCOPE  = 16;
 static constexpr int16_t PTR_ACTION_ENDSCOPE    = 17;
+static constexpr int16_t PTR_ACTION_LANDING     = 18;

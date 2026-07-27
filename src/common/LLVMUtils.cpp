@@ -1,0 +1,16 @@
+#include "LLVMUtils.h"
+
+#include "llvm/IR/Instructions.h" 
+
+using namespace llvm;
+
+Value* ensureI64(LLVMContext *_Ctx, 
+  Value *V, BasicBlock::iterator instPos) {
+  auto i64Ty = Type::getInt64Ty(*_Ctx);
+  if (V->getType() == i64Ty) return V;
+  if (V->getType()->isIntegerTy())
+    return CastInst::CreateSExtOrBitCast(V, i64Ty, "", LLVM_INS(instPos)); // will someone pass -1?
+  if (V->getType()->isPointerTy())
+    return CastInst::Create(Instruction::PtrToInt, V, i64Ty, "", LLVM_INS(instPos));
+  throw std::runtime_error("fatal");
+}

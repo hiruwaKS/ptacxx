@@ -2,8 +2,18 @@
 
 #include "VId.h"
 
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Value.h>
+#include <llvm/Bitcode/BitcodeWriter.h>
+#if LLVM_VERSION_MAJOR < 16
+#include <llvm/ADT/Triple.h>
+#else
+#include <llvm/TargetParser/Triple.h>
+#endif
+#include <llvm/Support/raw_ostream.h>
+#include <llvm/Support/FileSystem.h>
+#include <llvm/Support/Path.h>
 
 #include <memory>
 #include <string>
@@ -28,6 +38,9 @@ struct DebugInfo   { std::string debugInfo; };
 
 struct ModuleData {
   std::unique_ptr<llvm::Module> _module;
+  llvm::Triple _targetTriple;
+  std::unique_ptr<llvm::TargetLibraryInfoImpl> _TLII;
+  std::unique_ptr<llvm::TargetLibraryInfo> _TLI;
   Metadata _metadata;
   IRStat _irStat;
   int16_t _moduleIdx;
@@ -51,11 +64,15 @@ public:
     _libBasePath(libBasePath), 
     _ctx(std::make_unique<llvm::LLVMContext>()) {}
 
-  void addMainModule(const std::string &irPath);
+  int16_t addMainModule(const std::string &irPath);
+
+  static int16_t libNameToModuleIdx(const std::string &libName);
 
   /// See `VId.h` to know more about moduleIdx
-  void addLibModule(const int16_t moduleIdx);
-  void addLibModule(const std::string &libName);
+  int16_t addLibModule(const int16_t moduleIdx);
+  int16_t addLibModule(const std::string &libName) {
+    return addLibModule(libNameToModuleIdx(libName));
+  }
 
   const llvm::LLVMContext &getLLVMContext() const { return *_ctx; }
   
@@ -66,7 +83,7 @@ public:
       throw std::runtime_error("module not found");
     return it->second;
   }
-
+  // you can use this to modify the module, like instrumenting
   llvm::Module &getModule(int16_t moduleIdx) { return *getModuleDataByIdx(moduleIdx)._module;  }
   const llvm::Module &getModule(int16_t moduleIdx) const 
     { return *getModuleDataByIdx(moduleIdx)._module; }
@@ -75,6 +92,7 @@ public:
   const IRStat& getIRStat(int16_t moduleIdx) const
     { return getModuleDataByIdx(moduleIdx)._irStat; }
 
+  /// @note cached, safe for instrumenting
   VId valueToVId(const llvm::Value *V) const {
     if (!V) throw std::runtime_error("pass nullptr to valueToVId");
     auto it = _valueToVidCache.find(V);
@@ -94,6 +112,23 @@ public:
   /// @return the id, type of value, the name and the debug info (if not clipped)
   /// @warning this may be costly, don't call it in every query
   DebugInfo getValueDebugInfo(const llvm::Value *V) const;
+
+  /// both .ll and .bc are supported
+  void dumpModule(int16_t moduleIdx, const std::string &outPath) const {
+    const auto &M = getModule(moduleIdx);
+    llvm::SmallString<256> path(outPath);
+    llvm::sys::path::remove_filename(path);
+    if (!path.empty()) llvm::sys::fs::create_directories(path);
+    std::error_code EC;
+    llvm::raw_fd_ostream OS(outPath, EC, llvm::sys::fs::OF_Text);
+    if (EC) {
+      llvm::errs() << "Cannot open " << outPath << ": " << EC.message() << "\n";
+      return;
+    }
+    if (llvm::sys::path::extension(outPath) == ".ll")
+      M.print(OS, nullptr);
+    else WriteBitcodeToFile(M, OS);
+  }
 
 private:
   void addModuleBase(const std::string &irPath, const int16_t moduleIdx);
