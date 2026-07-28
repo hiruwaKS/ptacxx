@@ -30,18 +30,18 @@
 /// Contains: Module::ModuleID, Module::SourceFileName, Module::TargetTriple
 ///   Module::DataLayout
 /// !llvm.ident, !clang.version, !optlevel, !commandline, !llvm.module.deps
-struct Metadata    { std::string metadata; };
+struct IRMetadata    { std::string metadata; };
 
 struct IRStat      { int16_t funcCnt; int16_t globalCnt; int32_t globalPtrCnt; int32_t argPtrCnt; int32_t instPtrCnt; bool hasMain; bool hasGlobalCtor; bool hasGlobalDtor; };
 
-struct DebugInfo   { std::string debugInfo; };
+struct IRDebugInfo   { std::string debugInfo; };
 
 struct ModuleData {
   std::unique_ptr<llvm::Module> _module;
   llvm::Triple _targetTriple;
   std::unique_ptr<llvm::TargetLibraryInfoImpl> _TLII;
   std::unique_ptr<llvm::TargetLibraryInfo> _TLI;
-  Metadata _metadata;
+  IRMetadata _metadata;
   IRStat _irStat;
   int16_t _moduleIdx;
 };
@@ -87,7 +87,7 @@ public:
   llvm::Module &getModule(int16_t moduleIdx) { return *getModuleDataByIdx(moduleIdx)._module;  }
   const llvm::Module &getModule(int16_t moduleIdx) const 
     { return *getModuleDataByIdx(moduleIdx)._module; }
-  const Metadata& getMetadata(int16_t moduleIdx) const 
+  const IRMetadata& getMetadata(int16_t moduleIdx) const 
     { return getModuleDataByIdx(moduleIdx)._metadata; }
   const IRStat& getIRStat(int16_t moduleIdx) const
     { return getModuleDataByIdx(moduleIdx)._irStat; }
@@ -96,8 +96,7 @@ public:
   VId valueToVId(const llvm::Value *V) const {
     if (!V) throw std::runtime_error("pass nullptr to valueToVId");
     auto it = _valueToVidCache.find(V);
-    return it != _valueToVidCache.end() ? it->second : 
-      throw std::runtime_error("fatal");
+    return it != _valueToVidCache.end() ? it->second : VID_NOT_REGISTERED;
   }
 
   const llvm::Value *vidToValue(VId id) const {
@@ -111,7 +110,7 @@ public:
 
   /// @return the id, type of value, the name and the debug info (if not clipped)
   /// @warning this may be costly, don't call it in every query
-  DebugInfo getValueDebugInfo(const llvm::Value *V) const;
+  IRDebugInfo getValueDebugInfo(const llvm::Value *V) const;
 
   /// both .ll and .bc are supported
   void dumpModule(int16_t moduleIdx, const std::string &outPath) const {

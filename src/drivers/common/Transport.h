@@ -8,13 +8,17 @@
 #include <string>
 #include <iostream>
 
-template <typename Impl> // CRTP
+/** a CRTP class
+ * @note void Impl::_init_impl(this, int, char **)
+ * @note std::string Impl::_handle_query_impl(const std::string &)
+ * @warning _init_impl should do llvm::cl::ParseCommandLineOptions
+ */
+template <typename Impl>
 class QueryServer {
 public:
   int run(int argc, char **argv) {
-    llvm::cl::ParseCommandLineOptions(argc, argv);
     Impl backend;
-    backend.init();
+    backend.init(argc, argv);
     while (true) {
       std::string input;
       std::getline(std::cin, input);
@@ -25,7 +29,7 @@ public:
     return 0;
   }
 private:
-  void init() { static_cast<Impl *>(this)->_init_impl(); }
+  void init(int argc, char **argv) { static_cast<Impl *>(this)->_init_impl(argc, argv); }
   std::string handle_query(const std::string &req) {
     try {
     return static_cast<Impl *>(this)->_handle_query_impl(req);

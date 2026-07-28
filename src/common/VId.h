@@ -8,6 +8,7 @@
  *   0: the module with main
  *   i: your i-th dynamic linking library (libc, libc++)
  *   the index is defined in `hooklibs.def`
+ *   -1 for unregistered
  * [globalIdx]
  *   the index of global value in llvm module, BEFORE instrumentation
  * [localIdx]
@@ -47,3 +48,5 @@ struct hash<VId> {
   }
 };
 }
+
+constexpr VId VID_NOT_REGISTERED = VId{-1, -1, -1};

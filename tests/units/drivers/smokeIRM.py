@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 import subprocess, sys, tempfile, os
 
-def _compile_to_bc(clang_bin, src, d):
+def _compile_to_bc(clang_bin, src, d, clip_debuginfo):
     bc = os.path.join(d, os.path.basename(src) + ".bc")
-    subprocess.run(f"{clang_bin} -emit-llvm -c -O0 -g -o {bc} {src}",
+    subprocess.run(f"{clang_bin} -emit-llvm -c -O0{"" if clip_debuginfo else " -g" } -o {bc} {src}",
                    shell=True, check=True, capture_output=True, text=True, timeout=30)
     return bc
 
@@ -32,7 +32,7 @@ def _llvm_major(clang_bin):
 
 def testInput1(irm_bin, clang_bin, src):
     with tempfile.TemporaryDirectory(prefix="irm_smoke_") as d:
-        bc = _compile_to_bc(clang_bin, src, d)
+        bc = _compile_to_bc(clang_bin, src, d, False)
         
         out = _query_irm(irm_bin, bc, "meta")
         print(f"> meta:\n{out}\n")
@@ -66,7 +66,7 @@ def testInput1(irm_bin, clang_bin, src):
 def testInput2(irm_bin, clang_bin, src):
     ver = _llvm_major(clang_bin)
     with tempfile.TemporaryDirectory(prefix="irm_smoke_") as d:
-        bc = _compile_to_bc(clang_bin, src, d)
+        bc = _compile_to_bc(clang_bin, src, d, True)
         
         out = _query_irm(irm_bin, bc, "name ptr")
         print(f"> name ptr:\n{out}\n")
@@ -80,12 +80,12 @@ def testInput2(irm_bin, clang_bin, src):
         out = _query_irm(irm_bin, bc, f"debug {_vid_with_local(vid, 1)}")
         print(f"> debug {_vid_with_local(vid, 1)}:\n{out}\n")
         assert "%0" in out
-        assert "Argument:i32*" in out if ver < 15 else "Argument:ptr" in out
+        assert "i32*" in out if ver < 15 else "ptr" in out
         
         out = _query_irm(irm_bin, bc, f"debug {_vid_with_local(vid, 2)}")
         print(f"> debug {_vid_with_local(vid, 2)}:\n{out}\n")
         assert "%2" in out
-        assert "Instruction:i32**" in out if ver < 15 else "Instruction:ptr" in out
+        assert "i32**" in out if ver < 15 else "ptr" in out
         
         out = _query_irm(irm_bin, bc, "stat")
         print(f"> stat:\n{out}\n")

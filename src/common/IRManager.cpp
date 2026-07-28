@@ -217,101 +217,120 @@ std::vector<VId> IRManager::globalOrFunctionToVIds(const std::string &name) cons
   return results;
 }
 
-DebugInfo IRManager::getValueDebugInfo(const llvm::Value *V) const {
+IRDebugInfo IRManager::getValueDebugInfo(const llvm::Value *V) const {
   if (!V) throw std::runtime_error("fatal");
 
   std::string buf;
   llvm::raw_string_ostream os(buf);
 
   auto pr = [&](const llvm::Value *Val, const char *kind) {
-    os << kind << ":" << *Val->getType() << "\n";
+    auto vid = valueToVId(Val);
+    os << "vid: " << vid.moduleIdx << ":" << vid.globalIdx << ":" << vid.localIdx << "\n";
+    os << kind << " ";
+    if (auto *Arg = llvm::dyn_cast<llvm::Argument>(Val)) {
+      Arg->getParent()->printAsOperand(os, false);
+      os << ".";
+      Arg->printAsOperand(os, false);
+      os << ": " << *Val->getType() << "\n";
+    }
+    else if (auto *I = llvm::dyn_cast<llvm::Instruction>(Val)) {
+      I->getParent()->getParent()->printAsOperand(os, false); 
+      os << ".";
+      if (Val->getType()->isVoidTy()) {
+        auto *BB = I->getParent();
+        BB->printAsOperand(os, false);
+        unsigned idx = 0;
+        for (auto &Inst : *BB) {
+          if (&Inst == I) break;
+          idx++;
+        }
+        os << ".BBIdx" << idx << ": void" << "\n";
+      } else {
+        Val->printAsOperand(os, false);
+        os << ": " << *Val->getType() << "\n";
+      }
+    }
+    else {
+      Val->printAsOperand(os, false);
+      os << ": " << *Val->getType() << "\n";
+    }
 #if LLVM_VERSION_MAJOR == 14
     // check opaque pointer
     if (auto *PT = llvm::dyn_cast<llvm::PointerType>(Val->getType())) {
       if (PT->isOpaque()) os << " (opaque)";
     }
 #endif
-    Val->printAsOperand(os, false);
-    os << " at ";
   };
-
-  // (1) Instruction with !dbg DILocation
   if (auto *I = llvm::dyn_cast<llvm::Instruction>(V)) {
-    if (const llvm::DebugLoc &Loc = I->getDebugLoc()) {
-      pr(I, "Instruction");
-      os << Loc->getFilename() << ":" << Loc->getLine();
-      if (Loc->getColumn())
-        os << ":" << Loc->getColumn();
+    pr(I, "Instruction");
+    if (I->getOpcodeName()) os << I->getOpcodeName() << "\n";
+    if (auto DL = I->getDebugLoc()) {
+      unsigned Line = DL.getLine();
+      unsigned Col = DL.getCol();
+      if (Line != 0 && Col != 0) os << "LINE " << Line << ":" << Col << "\n";
+      if (auto *Scope = DL.getScope()) {
+        llvm::StringRef Filename = "";
+        llvm::StringRef Directory = "";
+        llvm::StringRef FuncName = "";
+        if (auto *DIL = dyn_cast<llvm::DILocation>(Scope)) {
+          if (auto *File = DIL->getFile()) {
+            Filename = File->getFilename();
+            Directory = File->getDirectory();
+          }
+          else if (auto *SP = DIL->getScope()->getSubprogram())
+            FuncName = SP->getName();
+        } else if (auto *DIS = dyn_cast<llvm::DIScope>(Scope)) {
+          if (auto *File = DIS->getFile()) {
+            Filename = File->getFilename();
+            Directory = File->getDirectory();
+          }
+          else if (auto *SP = DIL->getScope()->getSubprogram())
+            FuncName = SP->getName();
+        }
+        if (!Filename.empty()&&!Directory.empty()) os << Directory << "/" << Filename << "\n";
+        if (!FuncName.empty()) os << FuncName << "\n";
+      }
+    }
+    if (!I->use_empty()) {
+      if (I->getNumUses() > 10) { os << "[Used in too many places]\n"; }
+      else for (auto &U : I->uses()) {
+        os << "[Used at operand " << U.getOperandNo() << "]\n";
+        if (auto *User = dyn_cast<llvm::Instruction>(U.getUser())) {
+          pr(User, "Instruction");
+        }
+      }
     }
   }
-  // (2) Function with DISubprogram
   else if (auto *F = llvm::dyn_cast<llvm::Function>(V)) {
+    pr(F, "Function");
     if (auto *SP = F->getSubprogram()) {
-      pr(F, "Function");
-      os << SP->getName() << " at " << SP->getFilename()
-         << ":" << SP->getLine();
+      os << "Defined: " << (SP->isDefinition() ? "true" : "false") << "\n";
+      if (SP->getLine() && SP->getScopeLine()) os << "LINE " << SP->getLine() << ":" << SP->getScopeLine() << "\n";
+      if (auto *File = SP->getFile()) {
+        llvm::StringRef Filename = File->getFilename(); 
+        llvm::StringRef Directory = File->getDirectory();
+        if (!Filename.empty()&&!Directory.empty()) os << Directory << "/" << Filename << "\n";
+      }
     }
   }
-  // (3) GlobalVariable with DIGlobalVariableExpression
+  else if (auto *Arg = llvm::dyn_cast<llvm::Argument>(V)) {
+    pr(Arg, "Argument");
+  }
   else if (auto *GV = llvm::dyn_cast<llvm::GlobalVariable>(V)) {
-    if (auto *Dbg = GV->getMetadata("dbg")) {
-      if (auto *DIExpr = llvm::dyn_cast<llvm::DIGlobalVariableExpression>(Dbg)) {
-        if (auto *DVar = DIExpr->getVariable()) {
-          pr(GV, "Global");
-          os << DVar->getName() << " at " << DVar->getFilename()
-             << ":" << DVar->getLine();
+    pr(GV, "GlobalVarible");
+    llvm::SmallVector<llvm::DIGlobalVariableExpression *, 4> GVs;
+    GV->getDebugInfo(GVs);
+    for (auto *GVExpr : GVs) {
+      if (auto *DIGV = GVExpr->getVariable()) {
+        if (DIGV->getLine()) os << "LINE " << DIGV->getLine() << "\n";
+        if (auto *File = DIGV->getFile()) {
+        llvm::StringRef Filename = File->getFilename(); 
+        llvm::StringRef Directory = File->getDirectory();
+          if (!Filename.empty()&&!Directory.empty()) os << Directory << "/" << Filename << "\n";
         }
+        if (!DIGV->getLinkageName().empty()) os << DIGV->getLinkageName() << "\n";
       }
     }
   }
-
-  // (4) Fallback: scan dbg.declare / dbg.value in parent function
-  if (buf.empty()) {
-    if (auto *F = parentFunction(V)) {
-      const char *vkind = "Value";
-      if      (llvm::isa<llvm::Instruction>(V)) vkind = "Instruction";
-      else if (llvm::isa<llvm::Argument>(V))    vkind = "Argument";
-      pr(V, vkind);
-
-      const llvm::Value *argShadow = nullptr;
-      if (auto *Arg = llvm::dyn_cast<llvm::Argument>(V)) {
-        for (auto &BB : *F) {
-          for (auto &I : BB) {
-            if (auto *SI = llvm::dyn_cast<llvm::StoreInst>(&I)) {
-              if (SI->getValueOperand() == Arg) {
-                argShadow = SI->getPointerOperand();
-                break;
-              }
-            }
-          }
-          if (argShadow) break;
-        }
-      }
-
-      for (auto &BB : *F) {
-        for (auto &I : BB) {
-          if (auto *DDI = llvm::dyn_cast<llvm::DbgDeclareInst>(&I)) {
-            auto *addr = DDI->getAddress();
-            if (addr == V || (argShadow && addr == argShadow)) {
-              if (auto *DVar = DDI->getVariable()) {
-                os << DVar->getName() << " at " << DVar->getFilename()
-                   << ":" << DVar->getLine();
-              }
-            }
-          }
-          if (auto *DVI = llvm::dyn_cast<llvm::DbgValueInst>(&I)) {
-            auto *val = DVI->getValue();
-            if (val == V || (argShadow && val == argShadow)) {
-              if (auto *DVar = DVI->getVariable()) {
-                os << DVar->getName() << " at " << DVar->getFilename()
-                   << ":" << DVar->getLine();
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  return DebugInfo{buf};
+  return IRDebugInfo{buf};
 }

@@ -13,8 +13,12 @@ Value *DynamicMemoryBuiltins::getDynamicAllocationSize(CallBase *CB) {
       Function* strlenFn = _M->getFunction("strlen");
       if (!strlenFn) {
         auto sizeTy = _M->getDataLayout().getIntPtrType(*_Ctx, 0);
-        strlenFn = cast<Function>(_M->getOrInsertFunction(
-          "strlen",sizeTy,Type::getInt8PtrTy(*_Ctx)
+        strlenFn = cast<Function>(_M->getOrInsertFunction("strlen",sizeTy,
+#if LLVM_VERSION_MAJOR <= 14
+          Type::getInt8PtrTy(*_Ctx)
+#else
+          PointerType::get(*_Ctx, 0)
+#endif
         ).getCallee());
       }
       auto str = CB->getArgOperand(0);

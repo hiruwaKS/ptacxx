@@ -27,7 +27,8 @@ class IRMQueryServer : public QueryServer<IRMQueryServer> {
 private:
   std::unique_ptr<IRManager> _irm;
 private:
-  void _init_impl() {
+  void _init_impl(int argc, char **argv) {
+    llvm::cl::ParseCommandLineOptions(argc, argv);
     _irm = std::make_unique<IRManager>(LibBasePath);
     if (!IRPath.empty())
       _irm->addMainModule(IRPath);
@@ -39,15 +40,15 @@ private:
     PAQuery query = parse(req, *_irm);
     PAResponse response = std::visit([](const auto &arg) -> PAResponse {
       using T = std::decay_t<decltype(arg)>;
-      if constexpr (std::is_same_v<T, Metadata>)
+      if constexpr (std::is_same_v<T, IRMetadata>)
         return arg;
       if constexpr (std::is_same_v<T, IRStat>)
         return arg;
-      if constexpr (std::is_same_v<T, DebugInfo>)
+      if constexpr (std::is_same_v<T, IRDebugInfo>)
         return arg;
       if constexpr (std::is_same_v<T, NameToVIds>)
         return arg;
-      if constexpr (std::is_same_v<T, ParseError>)
+      if constexpr (std::is_same_v<T, IRParseError>)
         return ErrorOut{arg.message};
       return ErrorOut{"unknown query type or not available"};
     }, query);

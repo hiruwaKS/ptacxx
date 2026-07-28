@@ -46,5 +46,3 @@ private:
     return *instance;
   }
 };
-
-void init();

@@ -71,15 +71,17 @@ int main(int argc, char *argv[]) {
   // 2.1 used types
 
   auto *VoidTy = Type::getVoidTy(Ctx);
+#if LLVM_VERSION_MAJOR <= 14
   auto *I8PtrTy = Type::getInt8PtrTy(Ctx);
+#else
+  auto *I8PtrTy = PointerType::get(Ctx, 0);
+#endif
   auto *I16Ty = Type::getInt16Ty(Ctx);
   auto *I32Ty = Type::getInt32Ty(Ctx);
   auto *I64Ty = Type::getInt64Ty(Ctx);
   auto *ISizeTy = Type::getIntNTy(Ctx, sizeof(size_t) * 8);
-  auto *ptrRecordTy = StructType::get(Ctx,
-    {I16Ty, I16Ty, I16Ty, I16Ty, I64Ty, I64Ty, I64Ty}, false);
   auto *hookInitTy = FunctionType::get(VoidTy, {ISizeTy}, false);
-  auto *hookPushTy = FunctionType::get(VoidTy, {ptrRecordTy}, false);
+  auto *hookPushTy = FunctionType::get(VoidTy, {I16Ty, I16Ty, I16Ty, I16Ty, I64Ty, I64Ty}, false);
   auto *hookDumpTy = FunctionType::get(VoidTy, {I8PtrTy}, false);
   auto *registerGlobalsTy = FunctionType::get(I32Ty, {}, false);
 
@@ -100,39 +102,17 @@ int main(int argc, char *argv[]) {
     );
   }
 
-  auto makePtrRecord = [&](const VId &vid, int16_t action,
-      Constant *f4 = nullptr, Constant *f5 = nullptr, Constant *f6 = nullptr) -> Constant * {
-    auto zero = ConstantInt::get(I64Ty, 0);
-    if (!f4) f4 = zero;
-    else { if(f4->getType() != I64Ty) llvm::report_fatal_error("fatal"); }
-    if (!f5) f5 = zero;
-    else { if(f5->getType() != I64Ty) llvm::report_fatal_error("fatal"); }
-    if (!f6) f6 = zero;
-    else { if(f6->getType() != I64Ty) llvm::report_fatal_error("fatal"); }
-    return ConstantStruct::get(ptrRecordTy, {
-      ConstantInt::get(I16Ty, static_cast<uint64_t>(static_cast<int64_t>(vid.moduleIdx))),
-      ConstantInt::get(I16Ty, static_cast<uint64_t>(static_cast<int64_t>(vid.globalIdx))),
-      ConstantInt::get(I16Ty, static_cast<uint64_t>(static_cast<int64_t>(vid.localIdx))),
-      ConstantInt::get(I16Ty, static_cast<uint64_t>(static_cast<int64_t>(action))),
-      f4, f5, f6
-    });
-  };
-
- // 2.3 traverse all functions with definition
- {
-    auto setPtr = [&](Value *agg, Value *val, auto instPos) {
-      return InsertValueInst::Create(agg, ensureI64(&Ctx, val, instPos), {4}, "", LLVM_INS(instPos));
-    };
-    auto setSize = [&](Value *agg, Value *val, auto instPos) {
-      return InsertValueInst::Create(agg, ensureI64(&Ctx, val, instPos), {5}, "", LLVM_INS(instPos));
-    };
+  // 2.3 traverse all functions with definition
+  {
+#define CONSTI16(val) ConstantInt::get(I16Ty, static_cast<uint64_t>(static_cast<int64_t>(val)))
+#define CONSTI64(val) ConstantInt::get(I64Ty, static_cast<uint64_t>(static_cast<int64_t>(val)))
+#define VID(vid) CONSTI16((vid).moduleIdx), CONSTI16((vid).globalIdx), CONSTI16((vid).localIdx)
     auto emitPointerProbe = [&](Value *Val, llvm::BasicBlock::iterator instPos) {
       auto vid = irm->valueToVId(Val);
       auto *ptrToIntInst = new llvm::PtrToIntInst(Val, I64Ty, "", LLVM_INS(instPos));
-      auto *ptrRecord = makePtrRecord(vid, PTR_ACTION_PROBE);
-      auto *ptrRecordWithPtr = setPtr(ptrRecord, ptrToIntInst, instPos);
-     CallInst::Create(hookPushFn, ptrRecordWithPtr, "", LLVM_INS(instPos));
-   };
+      CallInst::Create(hookPushFn, {VID(vid), CONSTI16(PTR_ACTION_PROBE), ptrToIntInst, CONSTI64(0)}, "", 
+        LLVM_INS(instPos));
+    };
 
     std::vector<llvm::BasicBlock::iterator> beforeFirstPt;
     for (auto F : functions) {
@@ -147,8 +127,8 @@ int main(int argc, char *argv[]) {
         if (&BB == &entryBB) {
           // 2.3.1 begin scope
           auto fvid = irm->valueToVId(F);
-          auto *fptrRecord = makePtrRecord(fvid, PTR_ACTION_BEGINSCOPE);
-          CallInst::Create(hookPushFn, fptrRecord, "", LLVM_INS(firstPt));
+          CallInst::Create(hookPushFn, {VID(fvid), CONSTI16(PTR_ACTION_BEGINSCOPE), CONSTI64(0), CONSTI64(0)}, 
+            "", LLVM_INS(firstPt));
           // 2.3.2 args
           for (auto &arg : F->args()) 
             if (arg.getType()->isPointerTy())
@@ -177,18 +157,17 @@ int main(int argc, char *argv[]) {
                   sizeMultipiler = static_cast<size_t>(constSize->getSExtValue());
                 } else varMultipiler = AI->getArraySize();
               }
-              auto *ptrRecord = makePtrRecord(allocaid, PTR_ACTION_ALLOCA,
-                nullptr,
-                varMultipiler ? nullptr : ConstantInt::get(I64Ty, sizeMultipiler));
-              Value* ptrRecordWithSize = ptrRecord;
+              Value *sizeVal;
               if (varMultipiler) {
                 auto multiplier = ConstantInt::get(I64Ty, sizeMultipiler);
-                auto mul = BinaryOperator::Create(
-                Instruction::Mul, multiplier, varMultipiler, "", LLVM_INS(instPos));
-                ptrRecordWithSize = setSize(ptrRecord, mul, instPos);
+                sizeVal = BinaryOperator::Create(
+                  Instruction::Mul, multiplier, varMultipiler, "", LLVM_INS(instPos));
+              } else {
+                sizeVal = ConstantInt::get(I64Ty, sizeMultipiler);
               }
-              auto *ptrRecordWithPtrSize = setPtr(ptrRecordWithSize, &I, instPos);
-              CallInst::Create(hookPushFn, ptrRecordWithPtrSize, "", LLVM_INS(instPos));
+              auto *ptrVal = ensureI64(&Ctx, &I, instPos);
+              CallInst::Create(hookPushFn, {VID(allocaid), CONSTI16(PTR_ACTION_ALLOCA), ptrVal, sizeVal}, 
+                "", LLVM_INS(instPos));
             } else {
               // 2.3.4 probe case
               emitPointerProbe(&I, instPos);
@@ -197,15 +176,12 @@ int main(int argc, char *argv[]) {
                 // 2.3.5 heap alloca case
                 if (auto size = dynMem->getDynamicAllocationSize(CB)) {
                   auto cbid = irm->valueToVId(CB);
-                  auto *ptrRecord = makePtrRecord(cbid, PTR_ACTION_HEAP_ALLOCA);
-                  auto *ptrRecordWithSize = setSize(ptrRecord, size, instPos);
-                  auto *ptrRecordWithPtrSize = setPtr(ptrRecordWithSize, CB, instPos);
-                  CallInst::Create(hookPushFn, ptrRecordWithPtrSize, "", LLVM_INS(instPos));
+                  CallInst::Create(hookPushFn, {VID(cbid), CONSTI16(PTR_ACTION_HEAP_ALLOCA), 
+                    ensureI64(&Ctx, CB, instPos), size}, "", LLVM_INS(instPos));
                 } else if (auto freedPtr = dynMem->getFreedOperand(CB)) {
                   auto cbid = irm->valueToVId(CB);
-                  auto *ptrRecord = makePtrRecord(cbid, PTR_ACTION_HEAP_FREE);
-                  auto *ptrRecordWithPtr = setPtr(ptrRecord, freedPtr, instPos);
-                  CallInst::Create(hookPushFn, ptrRecordWithPtr, "", LLVM_INS(instPos));
+                  CallInst::Create(hookPushFn, {VID(cbid), CONSTI16(PTR_ACTION_HEAP_FREE), 
+                    ensureI64(&Ctx, freedPtr, instPos), CONSTI64(0)}, "", LLVM_INS(instPos));
                 }
               }
             }
@@ -214,8 +190,8 @@ int main(int argc, char *argv[]) {
           if (!handledLandingPad &&
               (isa<LandingPadInst>(I) || isa<CatchPadInst>(I) || isa<CleanupPadInst>(I))) {
             auto fvid = irm->valueToVId(F);
-            auto *ptrRecord = makePtrRecord(fvid, PTR_ACTION_LANDING);
-            CallInst::Create(hookPushFn, ptrRecord, "", LLVM_INS(firstPt));
+            CallInst::Create(hookPushFn, {VID(fvid), CONSTI16(PTR_ACTION_LANDING), CONSTI64(0), CONSTI64(0)}, 
+              "", LLVM_INS(firstPt));
             handledLandingPad = true;
           }
           if (!reachFirstPt) { ++beforePtIt; }
@@ -238,11 +214,8 @@ int main(int argc, char *argv[]) {
         errs() << "[Warning] Global has unsized type: " << GV->getName() << "\n";
         continue;
       }
-      auto *ptrRecord = makePtrRecord(vid, PTR_ACTION_REGION,
-        ConstantExpr::getPtrToInt(GV, I64Ty),
-        ConstantInt::get(I64Ty, globalSize)
-      );
-      CallInst::Create(hookPushFn, ptrRecord, "", entryBB);
+      CallInst::Create(hookPushFn, {VID(vid), CONSTI16(PTR_ACTION_REGION), 
+        ConstantExpr::getPtrToInt(GV, I64Ty), ConstantInt::get(I64Ty, globalSize)}, "", entryBB);
       ++cnt;
     }
     ReturnInst::Create(Ctx, ConstantInt::get(I32Ty, static_cast<uint64_t>(cnt)), entryBB);

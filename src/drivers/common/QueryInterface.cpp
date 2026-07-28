@@ -78,7 +78,7 @@ PAQuery parse(const std::string &input, IRManager &irm) {
     VId vid = parseVid(tokens[1]);
     if (const llvm::Value *V = irm.vidToValue(vid))
       return PAQuery{irm.getValueDebugInfo(V)};
-    return PAQuery{DebugInfo{"(invalid vid)"}};
+    return PAQuery{IRDebugInfo{"(invalid vid)"}};
   }
 
   if (cmd == "alias") {
@@ -118,7 +118,7 @@ PAQuery parse(const std::string &input, IRManager &irm) {
 
   return PAQuery{};
  } catch (const std::exception &e) {
-    return PAQuery{ParseError{std::string("parse error: ") + e.what()}};
+    return PAQuery{IRParseError{std::string("parse error: ") + e.what()}};
   }
 }
 
@@ -129,7 +129,7 @@ std::string responseToString(const PAResponse &response, IRManager &irm) {
     if constexpr (std::is_same_v<T, ErrorOut>)
       return "error: " + arg.message;
 
-    if constexpr (std::is_same_v<T, Metadata>)
+    if constexpr (std::is_same_v<T, IRMetadata>)
       return arg.metadata;
 
     if constexpr (std::is_same_v<T, IRStat>)
@@ -142,7 +142,7 @@ std::string responseToString(const PAResponse &response, IRManager &irm) {
            + "argPtrCnt: "      + std::to_string(arg.argPtrCnt)      + "\n"
            + "instPtrCnt: "     + std::to_string(arg.instPtrCnt);
     
-    if constexpr (std::is_same_v<T, DebugInfo>)
+    if constexpr (std::is_same_v<T, IRDebugInfo>)
       return arg.debugInfo;
 
     if constexpr (std::is_same_v<T, NameToVIds>) {
