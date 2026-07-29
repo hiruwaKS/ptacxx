@@ -10,7 +10,7 @@
 
 #include "Alias/InclusionBased/SparrowAA/Andersen.h"
 #include "Alias/InclusionBased/SparrowAA/AndersenAA.h"
-// #include "Alias/InclusionBased/SparrowAA/Log.h"
+#include "Alias/InclusionBased/SparrowAA/Log.h"
 #include "Alias/InclusionBased/SparrowAA/ResultUtils.h"
 #include "Alias/Infrastructure/AliasAnalysisWrapper/CLIUtils.h"
 

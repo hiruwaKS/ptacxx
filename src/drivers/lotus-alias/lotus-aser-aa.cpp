@@ -1,0 +1,301 @@
+/*
+ * Adapted from <lotus>/include/Alias/InclusionBased/AserPTA/PTADriver.h
+ *   and <lotus>/tools/alias/lotus-alias-aser-aa.cpp
+ */
+
+#include "drivers/common/QueryInterface.h"
+#include "drivers/common/Transport.h"
+#include "drivers/common/Postprocess.h"
+#include "common/IRManager.h"
+#include "common/Common.h"
+
+#include "Alias/InclusionBased/AserPTA/PointerAnalysis/PointerAnalysisPass.h"
+#include "Alias/InclusionBased/AserPTA/PointerAnalysis/Context/KCallSite.h"
+#include "Alias/InclusionBased/AserPTA/PointerAnalysis/Context/KOrigin.h"
+#include "Alias/InclusionBased/AserPTA/PointerAnalysis/Context/NoCtx.h"
+#include "Alias/InclusionBased/AserPTA/PointerAnalysis/Models/LanguageModel/DefaultLangModel/DefaultLangModel.h"
+#include "Alias/InclusionBased/AserPTA/PointerAnalysis/Models/MemoryModel/FieldInsensitive/FIMemModel.h"
+#include "Alias/InclusionBased/AserPTA/PointerAnalysis/Models/MemoryModel/FieldSensitive/FSMemModel.h"
+#include "Alias/InclusionBased/AserPTA/PointerAnalysis/PointerAnalysisPass.h"
+#include "Alias/InclusionBased/AserPTA/PointerAnalysis/Solver/DeepPropagation.h"
+#include "Alias/InclusionBased/AserPTA/PointerAnalysis/Solver/PartialUpdateSolver.h"
+#include "Alias/InclusionBased/AserPTA/PointerAnalysis/Solver/PointsTo/BDDPts.h"
+#include "Alias/InclusionBased/AserPTA/PointerAnalysis/Solver/PointsTo/BitVectorPTS.h"
+#include "Alias/InclusionBased/AserPTA/PointerAnalysis/Solver/PointsTo/PointsToSelector.h"
+#include "Alias/InclusionBased/AserPTA/PointerAnalysis/Solver/WavePropagation.h"
+#include "Alias/InclusionBased/AserPTA/PreProcessing/Passes/CanonicalizeGEPPass.h"
+#include "Alias/InclusionBased/AserPTA/PreProcessing/Passes/LoweringMemCpyPass.h"
+#include "Alias/InclusionBased/AserPTA/PreProcessing/Passes/RemoveASMInstPass.h"
+#include "Alias/InclusionBased/AserPTA/PreProcessing/Passes/RemoveExceptionHandlerPass.h"
+#include "Alias/InclusionBased/AserPTA/PreProcessing/Passes/StandardHeapAPIRewritePass.h"
+#include "Alias/Infrastructure/AliasAnalysisWrapper/CLIUtils.h"
+#include "Alias/Infrastructure/Spec/AliasSpecManager.h"
+
+#include <llvm/ADT/Statistic.h>
+#include <llvm/IR/IRPrintingPasses.h>
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/LegacyPassManager.h>
+#include <llvm/IRReader/IRReader.h>
+#include <llvm/Support/CommandLine.h>
+#include <llvm/Support/Signals.h>
+#include <llvm/Support/SourceMgr.h>
+#include <llvm/Transforms/IPO/AlwaysInliner.h>
+
+#include <iostream>
+#include <variant>
+
+using namespace aser;
+using namespace llvm;
+using namespace std;
+using namespace lotus::alias;
+using namespace lotus::alias::tools;
+
+LLVM_CL_IGNORE_WARNINGS_BEGIN
+
+// Command-line options
+static cl::opt<std::string> InputFilename(cl::Positional,
+                                          cl::desc("<input bitcode file>"),
+                                          cl::Required);
+
+static cl::opt<std::string> AnalysisMode(
+    "analysis-mode",
+    cl::desc("Analysis mode: ci (context-insensitive), 1-cfa, 2-cfa, origin"),
+    cl::init("ci"), cl::value_desc("mode"));
+
+static cl::opt<std::string>
+    SolverType("solver", cl::desc("Solver type: basic, wave, deep"),
+               cl::init("wave"), cl::value_desc("solver"));
+
+static cl::opt<bool>
+    FieldSensitive("field-sensitive",
+                   cl::desc("Use field-sensitive memory model"),
+                   cl::init(true));
+
+static cl::opt<bool> DumpStats("dump-stats",
+                               cl::desc("Print analysis statistics"),
+                               cl::init(true));
+
+LLVM_CL_IGNORE_WARNINGS_END
+
+using Origin = KOrigin<1>;
+
+template <typename ctx, typename pts>
+using FSModel = DefaultLangModel<ctx, FSMemModel<ctx>, pts>;
+
+template <typename ctx, typename pts>
+using FIModel = DefaultLangModel<ctx, FIMemModel<ctx>, pts>;
+
+// 2*2*3*4 = 48
+
+class PTAPass { // RTTI
+public:
+  virtual void getPointsTo(const llvm::Value *V,
+    std::vector<const llvm::Value *> &result) const = 0;
+  virtual bool alias(const llvm::Value *v1, const llvm::Value *v2) const = 0;
+  virtual void getCtx() = 0;
+  virtual ~PTAPass();
+};
+
+ PTAPass::~PTAPass() = default;
+
+template <typename Solver>
+class PTAPassImpl: public PTAPass {
+  /// @warning don't add two much in this class, the instantiated code will be inflated
+private:
+  using Ctx = typename Solver::ctx;
+  using ObjTy = typename Solver::ObjTy;
+
+  PointerAnalysisPass<Solver> *_ptaPass;
+  const Ctx *_ctx;
+public:
+  PTAPassImpl(PointerAnalysisPass<Solver>* ptaPass): _ptaPass(ptaPass) {}
+  void getPointsTo(const llvm::Value *V,
+      std::vector<const llvm::Value *> &result) const override {
+    std::vector<const ObjTy *> raw;
+    _ptaPass->getPTA()->getPointsTo(_ctx, V, raw);
+    for (auto *obj : raw) if (obj) result.push_back(obj->getValue());
+  }
+  bool alias(const llvm::Value *v1, const llvm::Value *v2) const override {
+    return _ptaPass->getPTA()->alias(_ctx, v1, _ctx, v2);
+  }
+  /// TODO: context sensitivity
+  void getCtx() override { _ctx = CtxTrait<Ctx>::getInitialCtx(); }
+};
+
+template <typename Solver>
+std::pair<std::unique_ptr<llvm::ModulePass>, std::unique_ptr<PTAPass>> getPtaPass() {
+  auto pass = std::make_unique<PointerAnalysisPass<Solver>>();
+  auto ptaPass = std::make_unique<PTAPassImpl<Solver>>(pass.get());
+  return std::make_pair(std::move(pass), std::move(ptaPass));
+}
+
+class AserPTAQueryServer : public QueryServer<AserPTAQueryServer> {
+  friend class QueryServer<AserPTAQueryServer>;
+private:
+  std::pair<std::unique_ptr<llvm::ModulePass>, std::unique_ptr<PTAPass>> _ptaPass;
+  llvm::legacy::PassManager _passes;
+  std::unique_ptr<IRManager> _irm;
+private:
+  void _init_impl(int argc, char **argv) {
+
+  // Parse command line
+  cl::ParseCommandLineOptions(
+      argc, argv, "AserPTA - High-Performance Pointer Analysis Tool\n");
+
+  // Load IR module
+  _irm = std::make_unique<IRManager>("");
+  _irm->addMainModule(InputFilename);
+  auto &M = _irm->getModule(0);
+
+  errs() << "Loaded module: " << InputFilename << "\n";
+  errs() << "Analysis mode: " << AnalysisMode << "\n";
+  errs() << "Solver type: " << SolverType << "\n";
+  errs() << "Field-sensitive: " << (FieldSensitive ? "yes" : "no") << "\n";
+
+  // Initialize AliasSpecManager with config files
+  auto specFilePaths = collectConfigFilePaths();
+  auto specManager = createAliasSpecManager(specFilePaths, &M);
+
+  // Display loaded config files
+  printLoadedConfigFiles(*specManager);
+
+  // Setup origin rules for origin-sensitive analysis
+  Origin::setOriginRules(
+      [](const Origin *, const llvm::Instruction *I) -> bool {
+        if (auto *CB = llvm::dyn_cast<CallBase>(I)) {
+          if (auto *F = CB->getCalledFunction()) {
+            StringRef name = F->getName();
+            // Track thread creation and spawn operations as origins
+            return name.equals("pthread_create") || name.contains("spawn") ||
+                   name.contains("thread");
+          }
+        }
+        return false;
+      });
+
+  // Determine solver
+
+#define determineSolver(Ctx, Pts, FieldModel)                                  \
+  if (SolverType == "basic") {                                                 \
+    _ptaPass = getPtaPass<PartialUpdateSolver<FieldModel<Ctx, Pts>>>();        \
+  } else if (SolverType == "wave") {                                           \
+    _ptaPass = getPtaPass<WavePropagation<FieldModel<Ctx, Pts>>>();            \
+  } else if (SolverType == "deep") {                                           \
+    _ptaPass = getPtaPass<DeepPropagation<FieldModel<Ctx, Pts>>>();            \
+  } else {                                                                     \
+    errs() << "Unknown solver type: " << SolverType << "\n"; exit(1);          \
+  }
+
+
+#define determineCtx(Pts, FieldModel)                                          \
+  {                                                                            \
+    if (AnalysisMode == "ci") {                                                \
+      determineSolver(NoCtx, Pts, FieldModel)                                  \
+    } else if (AnalysisMode == "cs1") {                                        \
+      determineSolver(KCallSite<1>, Pts, FieldModel)                           \
+    } else if (AnalysisMode == "cs2") {                                        \
+      determineSolver(KCallSite<2>, Pts, FieldModel)                           \
+    } else if (AnalysisMode == "origin") {                                     \
+      determineSolver(Origin, Pts, FieldModel)                                 \
+    } else {                                                                   \
+      errs() << "Unknown analysis mode: " << AnalysisMode << "\n";             \
+      errs() << "Valid modes: ci, 1-cfa, 2-cfa, origin\n";                     \
+      exit(1);                                                                 \
+    }                                                                          \
+  }
+
+#define determineFieldmodel(Pts)                                               \
+  {                                                                            \
+    if (FieldSensitive) {                                                      \
+      determineCtx(Pts, FSModel)                                               \
+    } else {                                                                   \
+      determineCtx(Pts, FIModel)                                               \
+    }                                                                          \
+  }
+
+#define determinePts()                                                         \
+  {                                                                            \
+    if (ConfigUseBDDPts) {                                                     \
+      if (ConfigBDDPtsReorder) {                                               \
+        const auto &methodName = ConfigBDDPtsReorderMethod.getValue();         \
+        BDDAndersPtsSet::ReorderingMethod method =                             \
+            BDDAndersPtsSet::ReorderingMethod::Sift;                           \
+        if (!BDDAndersPtsSet::parseReorderingMethod(methodName, method)) {     \
+          llvm::report_fatal_error(                                            \
+              llvm::Twine("Unknown BDD reordering method: ") + methodName);    \
+        }                                                                      \
+        BDDAndersPtsSet::configureReordering(true, method);                    \
+      } else {                                                                 \
+        BDDAndersPtsSet::configureReordering(false);                           \
+      }                                                                        \
+      std::cout << "Using BDD-based points-to analysis\n";                     \
+      determineFieldmodel(BDDPts)                                              \
+    } else {                                                                   \
+      std::cout << "Using BitVector-based points-to analysis\n";               \
+      determineFieldmodel(BitVectorPTS)                                        \
+    }                                                                          \
+  }
+
+    determinePts()
+    
+    // Preprocessing passes
+    llvm::errs() << "Preprocessing IR...\n";
+    _passes.add(new CanonicalizeGEPPass());
+    _passes.add(new LoweringMemCpyPass());
+    _passes.add(new RemoveExceptionHandlerPass());
+    _passes.add(new RemoveASMInstPass());
+    _passes.add(new StandardHeapAPIRewritePass());
+
+    // Analysis passes
+    _passes.add(_ptaPass.first.get());
+    if (DumpStats) llvm::ResetStatistics();
+    llvm::errs() << "Running pointer analysis...\n";
+    _passes.run(M);
+    llvm::errs() << "Analysis completed.\n";
+
+    // Dump if required
+    if (DumpStats) llvm::PrintStatistics(llvm::outs());
+
+    // Prepare for query
+    _ptaPass.second->getCtx();
+  }
+  std::string _handle_query_impl(const std::string &req){
+    PAQuery query = parse(req, *_irm);
+    PAResponse response = std::visit([&](const auto &arg) -> PAResponse {
+      using T = std::decay_t<decltype(arg)>;
+      if constexpr (std::is_same_v<T, IRMetadata>)
+        return arg;
+      if constexpr (std::is_same_v<T, IRStat>)
+        return arg;
+      if constexpr (std::is_same_v<T, IRDebugInfo>)
+        return arg;
+      if constexpr (std::is_same_v<T, NameToVIds>)
+        return arg;
+      if constexpr (std::is_same_v<T, IRParseError>)
+        return ErrorOut{arg.message};
+      if constexpr (std::is_same_v<T, PtsIn>) {
+        std::vector<const llvm::Value *> pts;
+        _ptaPass.second->getPointsTo(arg.ptr, pts);
+        return PtsOut{pts};
+      }
+      if constexpr (std::is_same_v<T, PtIn>) {
+        std::vector<const llvm::Value *> pts1;
+        _ptaPass.second->getPointsTo(arg.ptr, pts1);
+        return PtOut{mayPointTo(pts1, arg.obj) ? ResultMay: ResultNo};
+      }
+      if constexpr (std::is_same_v<T, AliasIn>) {
+        std::vector<const llvm::Value *> pts1;
+        auto may = _ptaPass.second->alias(arg.a, arg.b);
+        return AliasOut{ may ? 
+          llvm::AliasResult::MayAlias : llvm::AliasResult::NoAlias
+        };
+      }
+      return ErrorOut{"unknown query type or not available"};
+    }, query);
+    return responseToString(response, *_irm);
+  } 
+};
+
+int main(int argc, char **argv) {
+  return AserPTAQueryServer().run(argc, argv);
+}
