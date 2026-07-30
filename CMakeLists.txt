@@ -29,7 +29,8 @@ if (BINARY_DIR_NAME STREQUAL "lotus")
   get_filename_component(LOTUS_INCLUDE_DIR ${LOTUS_BINARY_DIR}/../include ABSOLUTE)
   set(_LOTUS_LIBS
     CanaryAliasAnalysisWrapper SVFG CanaryICFG AserPTA CanaryDynamicAA
-    CanaryAliasCLIUtils AliasSpecManager CanaryAliasPtsSet Andersen CanaryCUDD CanaryLLVMUtils Annotation)
+    CanaryAliasCLIUtils AliasSpecManager CanaryAliasPtsSet Andersen CanaryCUDD CanaryLLVMUtils Annotation
+    CanaryDyckAA SeaDsaAnalysis CanaryCFG CanaryParallel)
   foreach(lib ${_LOTUS_LIBS})
     if (NOT EXISTS "${LOTUS_LIB_DIR}/lib${lib}.a")
       message(FATAL_ERROR "Lotus library (lib${lib}.a) not found in ${LOTUS_LIB_DIR}")

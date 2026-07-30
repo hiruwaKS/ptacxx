@@ -16,12 +16,12 @@ if (BINARY_DIR_NAME STREQUAL "lotus")
   target_link_libraries(lotus-sparrow-aa PRIVATE drivers-common)
   target_link_libraries(lotus-sparrow-aa PRIVATE
     lotus::Andersen
-    lotus::CanaryAliasAnalysisWrapper
     lotus::CanaryAliasPtsSet
     lotus::CanaryCUDD
     lotus::AliasSpecManager
     lotus::CanaryLLVMUtils
-    lotus::Annotation)
+    lotus::Annotation
+  )
 
   add_executable(lotus-aser-aa lotus-aser-aa.cpp)
 
@@ -41,13 +41,56 @@ if (BINARY_DIR_NAME STREQUAL "lotus")
   target_link_libraries(lotus-aser-aa PRIVATE
     lotus::AserPTA
     lotus::CanaryAliasCLIUtils
-    lotus::Andersen
-    lotus::CanaryAliasAnalysisWrapper
     lotus::CanaryAliasPtsSet
     lotus::CanaryCUDD
     lotus::AliasSpecManager
     lotus::CanaryLLVMUtils
+    lotus::Annotation
     LLVMTransformUtils
-    lotus::Annotation)
+  )
+
+  add_executable(lotus-un-dyckaa lotus-un-dyckaa.cpp)
+
+# add_smoke_test_target(lotus-dyckaa
+#   ${CMAKE_SOURCE_DIR}/tests/units/drivers/smokeDyckAA.py
+#   FILE_DEPS
+#   ${LLVM_TOOLS_BINARY_DIR}/clang-${LLVM_VERSION_MAJOR}
+# )
+
+  target_include_directories(lotus-un-dyckaa PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+  target_include_directories(lotus-un-dyckaa SYSTEM PRIVATE ${LOTUS_INCLUDE_DIR})
+
+  target_include_directories(lotus-un-dyckaa SYSTEM PRIVATE ${LOTUS_BINARY_DIR}/../third-party)
+
+  target_link_libraries(lotus-un-dyckaa PRIVATE drivers-common)
+  target_link_libraries(lotus-un-dyckaa PRIVATE
+    lotus::CanaryDyckAA
+    lotus::CanaryCFG
+    lotus::CanaryParallel
+    lotus::AliasSpecManager
+    lotus::CanaryLLVMUtils
+    lotus::Annotation
+  )
+
+  add_executable(lotus-un-seadsa-aa lotus-un-seadsa-aa.cpp)
+
+# add_smoke_test_target(lotus-seadsa-aa
+#   ${CMAKE_SOURCE_DIR}/tests/units/drivers/smokeSeadsa.py
+#   FILE_DEPS
+#   ${LLVM_TOOLS_BINARY_DIR}/clang-${LLVM_VERSION_MAJOR}
+# )
+
+  target_include_directories(lotus-un-seadsa-aa PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+  target_include_directories(lotus-un-seadsa-aa SYSTEM PRIVATE ${LOTUS_INCLUDE_DIR})
+
+  target_include_directories(lotus-un-seadsa-aa SYSTEM PRIVATE ${LOTUS_BINARY_DIR}/../third-party)
+
+  target_link_libraries(lotus-un-seadsa-aa PRIVATE drivers-common)
+  target_link_libraries(lotus-un-seadsa-aa PRIVATE
+    lotus::SeaDsaAnalysis
+    LLVMTransformUtils
+  )
 
 endif()

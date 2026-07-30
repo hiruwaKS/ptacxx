@@ -9,6 +9,7 @@
 #include <variant>
 #include <string>
 #include <vector>
+#include <set>
 #include <tuple>
 #include <cstring>
 
@@ -21,6 +22,7 @@ std::string vidToString(VId vid);
 enum ModalityResult { ResultNo, ResultMay, ResultMust };
 
 struct AliasIn     { const llvm::Value *a; const llvm::Value *b; };
+struct AliasSetIn  { const llvm::Value *ptr; };
 struct PtsIn       { const llvm::Value *ptr; };
 struct PtIn        { const llvm::Value *ptr; const llvm::Value *obj; };
 struct ReachableIn { const llvm::Value *from; const llvm::Value *to; };
@@ -30,10 +32,11 @@ struct IRParseError  { std::string message; };
 
 using PAQuery = std::variant<std::monostate,
   IRMetadata, IRStat, IRDebugInfo, NameToVIds, IRParseError,
-  AliasIn, PtsIn, PtIn, ReachableIn, CrashTestIn>;
+  AliasIn, AliasSetIn, PtsIn, PtIn, ReachableIn, CrashTestIn>;
 
 struct AliasOut     { llvm::AliasResult result; };
 struct PtsOut       { std::vector<const llvm::Value *> targets; };
+struct AliasSetOut  { const std::set<llvm::Value *> * ptrs; };
 struct PtOut        { ModalityResult result; };
 struct ReachableOut { ModalityResult result; };
 struct CrashTestOut {};
@@ -42,7 +45,7 @@ struct ErrorOut     { std::string message; };
 using PAResponse = std::variant<
   ErrorOut,
   IRMetadata, IRStat, IRDebugInfo, NameToVIds,
-  AliasOut, PtsOut, PtOut, ReachableOut, CrashTestOut>;
+  AliasOut, PtsOut, AliasSetOut, PtOut, ReachableOut, CrashTestOut>;
 
 PAQuery parse(const std::string &input, IRManager &irm);
 

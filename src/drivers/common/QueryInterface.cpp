@@ -88,6 +88,12 @@ PAQuery parse(const std::string &input, IRManager &irm) {
     return PAQuery{AliasIn{a, b}};
   }
 
+  if (cmd == "aliasset") {
+    if (tokens.size() < 2) return PAQuery{};
+    const llvm::Value *ptr = irm.vidToValue(parseVid(tokens[1]));
+    return PAQuery{AliasSetIn{ptr}};
+  }
+
   if (cmd == "pts") {
     if (tokens.size() < 2) return PAQuery{};
     const llvm::Value *ptr = irm.vidToValue(parseVid(tokens[1]));
@@ -165,6 +171,20 @@ std::string responseToString(const PAResponse &response, IRManager &irm) {
     if constexpr (std::is_same_v<T, PtsOut>) {
       std::string r = "{";
       for (const llvm::Value *v : arg.targets) {
+        if (!r.empty()) r += " ";
+        try {
+          VId vid = irm.valueToVId(v);
+          r += vidToString(vid) + ",\n";
+        } catch (...) {
+          r += "(unknown)";
+        }
+      }
+      return r+"}";
+    }
+
+    if constexpr (std::is_same_v<T, AliasSetOut>) {
+      std::string r = "{";
+      for (llvm::Value *v : *arg.ptrs) {
         if (!r.empty()) r += " ";
         try {
           VId vid = irm.valueToVId(v);

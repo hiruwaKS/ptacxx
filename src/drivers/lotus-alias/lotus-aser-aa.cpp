@@ -39,6 +39,7 @@
 #include <llvm/Support/CommandLine.h>
 #include <llvm/Support/Signals.h>
 #include <llvm/Support/SourceMgr.h>
+#include <llvm/Support/InitLLVM.h>
 #include <llvm/Transforms/IPO/AlwaysInliner.h>
 
 #include <iostream>
@@ -87,7 +88,7 @@ using FIModel = DefaultLangModel<ctx, FIMemModel<ctx>, pts>;
 
 // 2*2*3*4 = 48
 
-class PTAPass { // RTTI
+class PTAPass {
 public:
   virtual void getPointsTo(const llvm::Value *V,
     std::vector<const llvm::Value *> &result) const = 0;
@@ -100,7 +101,6 @@ public:
 
 template <typename Solver>
 class PTAPassImpl: public PTAPass {
-  /// @warning don't add two much in this class, the instantiated code will be inflated
 private:
   using Ctx = typename Solver::ctx;
   using ObjTy = typename Solver::ObjTy;
@@ -133,34 +133,34 @@ class AserPTAQueryServer : public QueryServer<AserPTAQueryServer> {
   friend class QueryServer<AserPTAQueryServer>;
 private:
   std::pair<std::unique_ptr<llvm::ModulePass>, std::unique_ptr<PTAPass>> _ptaPass;
-  llvm::legacy::PassManager _passes;
+  std::unique_ptr<llvm::legacy::PassManager> _passes;
   std::unique_ptr<IRManager> _irm;
 private:
   void _init_impl(int argc, char **argv) {
+    InitLLVM X(argc, argv);
+    // Parse command line
+    cl::ParseCommandLineOptions(
+        argc, argv, "AserPTA - High-Performance Pointer Analysis Tool\n");
+  
+    // Load IR module
+    _irm = std::make_unique<IRManager>("");
+    _irm->addMainModule(InputFilename);
+    auto &M = _irm->getModule(0);
+  
+    errs() << "Loaded module: " << InputFilename << "\n";
+    errs() << "Analysis mode: " << AnalysisMode << "\n";
+    errs() << "Solver type: " << SolverType << "\n";
+    errs() << "Field-sensitive: " << (FieldSensitive ? "yes" : "no") << "\n";
+  
+    // Initialize AliasSpecManager with config files
+    auto specFilePaths = collectConfigFilePaths();
+    auto specManager = createAliasSpecManager(specFilePaths, &M);
+  
+    // Display loaded config files
+    printLoadedConfigFiles(*specManager);
 
-  // Parse command line
-  cl::ParseCommandLineOptions(
-      argc, argv, "AserPTA - High-Performance Pointer Analysis Tool\n");
-
-  // Load IR module
-  _irm = std::make_unique<IRManager>("");
-  _irm->addMainModule(InputFilename);
-  auto &M = _irm->getModule(0);
-
-  errs() << "Loaded module: " << InputFilename << "\n";
-  errs() << "Analysis mode: " << AnalysisMode << "\n";
-  errs() << "Solver type: " << SolverType << "\n";
-  errs() << "Field-sensitive: " << (FieldSensitive ? "yes" : "no") << "\n";
-
-  // Initialize AliasSpecManager with config files
-  auto specFilePaths = collectConfigFilePaths();
-  auto specManager = createAliasSpecManager(specFilePaths, &M);
-
-  // Display loaded config files
-  printLoadedConfigFiles(*specManager);
-
-  // Setup origin rules for origin-sensitive analysis
-  Origin::setOriginRules(
+    // Setup origin rules for origin-sensitive analysis
+    Origin::setOriginRules(
       [](const Origin *, const llvm::Instruction *I) -> bool {
         if (auto *CB = llvm::dyn_cast<CallBase>(I)) {
           if (auto *F = CB->getCalledFunction()) {
@@ -239,18 +239,19 @@ private:
     determinePts()
     
     // Preprocessing passes
+    _passes = std::make_unique<legacy::PassManager>();
     llvm::errs() << "Preprocessing IR...\n";
-    _passes.add(new CanonicalizeGEPPass());
-    _passes.add(new LoweringMemCpyPass());
-    _passes.add(new RemoveExceptionHandlerPass());
-    _passes.add(new RemoveASMInstPass());
-    _passes.add(new StandardHeapAPIRewritePass());
+    _passes->add(new CanonicalizeGEPPass());
+    _passes->add(new LoweringMemCpyPass());
+    _passes->add(new RemoveExceptionHandlerPass());
+    _passes->add(new RemoveASMInstPass());
+    _passes->add(new StandardHeapAPIRewritePass());
 
     // Analysis passes
-    _passes.add(_ptaPass.first.get());
+    _passes->add(_ptaPass.first.get());
     if (DumpStats) llvm::ResetStatistics();
     llvm::errs() << "Running pointer analysis...\n";
-    _passes.run(M);
+    _passes->run(M);
     llvm::errs() << "Analysis completed.\n";
 
     // Dump if required
@@ -284,7 +285,6 @@ private:
         return PtOut{mayPointTo(pts1, arg.obj) ? ResultMay: ResultNo};
       }
       if constexpr (std::is_same_v<T, AliasIn>) {
-        std::vector<const llvm::Value *> pts1;
         auto may = _ptaPass.second->alias(arg.a, arg.b);
         return AliasOut{ may ? 
           llvm::AliasResult::MayAlias : llvm::AliasResult::NoAlias
