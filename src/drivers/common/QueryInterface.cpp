@@ -62,23 +62,24 @@ PAQuery parse(const std::string &input, IRManager &irm) {
   const auto &cmd = tokens[0];
 
   if (cmd == "meta") {
-    int16_t midx = 0;
-    if (tokens.size() >= 2) midx = parseVid(tokens[1]).moduleIdx;
-    return PAQuery{irm.getMetadata(midx)};
+    return PAQuery{IRMQuery{irm.getMetadata()}};
   }
 
   if (cmd == "stat") {
-    int16_t midx = 0;
-    if (tokens.size() >= 2) midx = parseVid(tokens[1]).moduleIdx;
-    return PAQuery{irm.getIRStat(midx)};
+    return PAQuery{IRMQuery{irm.getIRStat()}};
   }
 
   if (cmd == "debug") {
     if (tokens.size() < 2) return PAQuery{};
     VId vid = parseVid(tokens[1]);
     if (const llvm::Value *V = irm.vidToValue(vid))
-      return PAQuery{irm.getValueDebugInfo(V)};
-    return PAQuery{IRDebugInfo{"(invalid vid)"}};
+      return PAQuery{IRMQuery{irm.getValueDebugInfo(V)}};
+    return PAQuery{IRParseError{"invalid vid"}};
+  }
+  
+  if (cmd == "name") {
+    if (tokens.size() < 2) return PAQuery{};
+    return PAQuery{IRMQuery{NameToVIds{irm.globalOrFunctionToVIds(tokens[1])}}};
   }
 
   if (cmd == "alias") {
@@ -114,11 +115,6 @@ PAQuery parse(const std::string &input, IRManager &irm) {
     return PAQuery{ReachableIn{from, to}};
   }
 
-  if (cmd == "name") {
-    if (tokens.size() < 2) return PAQuery{};
-    return PAQuery{NameToVIds{irm.globalOrFunctionToVIds(tokens[1])}};
-  }
-
   if (cmd == "crash")
     return PAQuery{CrashTestIn{}};
 
@@ -131,34 +127,37 @@ PAQuery parse(const std::string &input, IRManager &irm) {
 std::string responseToString(const PAResponse &response, IRManager &irm) {
   return std::visit([&](const auto &arg) -> std::string {
     using T = std::decay_t<decltype(arg)>;
-
     if constexpr (std::is_same_v<T, ErrorOut>)
       return "error: " + arg.message;
+    if constexpr (std::is_same_v<T, IRMQuery>) {
+      return std::visit([&](const auto& inner) -> std::string {
+        using InnerT = std::decay_t<decltype(inner)>;
+        if constexpr (std::is_same_v<InnerT, IRMetadata>)
+          return inner.metadata;
 
-    if constexpr (std::is_same_v<T, IRMetadata>)
-      return arg.metadata;
+        if constexpr (std::is_same_v<InnerT, IRStat>)
+          return "hasMain: "        + std::to_string(inner.hasMain)        + "\n"
+              + "hasGlobalCtor: "  + std::to_string(inner.hasGlobalCtor)  + "\n"
+              + "hasGlobalDtor: "  + std::to_string(inner.hasGlobalDtor)  + "\n"
+              + "funcCnt: "        + std::to_string(inner.funcCnt)        + "\n"
+              + "globalCnt: "      + std::to_string(inner.globalCnt)      + "\n"
+              + "globalPtrCnt: "   + std::to_string(inner.globalPtrCnt)   + "\n"
+              + "argPtrCnt: "      + std::to_string(inner.argPtrCnt)      + "\n"
+              + "instPtrCnt: "     + std::to_string(inner.instPtrCnt);
+        
+        if constexpr (std::is_same_v<InnerT, IRDebugInfo>)
+          return inner.debugInfo;
 
-    if constexpr (std::is_same_v<T, IRStat>)
-      return "hasMain: "        + std::to_string(arg.hasMain)        + "\n"
-           + "hasGlobalCtor: "  + std::to_string(arg.hasGlobalCtor)  + "\n"
-           + "hasGlobalDtor: "  + std::to_string(arg.hasGlobalDtor)  + "\n"
-           + "funcCnt: "        + std::to_string(arg.funcCnt)        + "\n"
-           + "globalCnt: "      + std::to_string(arg.globalCnt)      + "\n"
-           + "globalPtrCnt: "   + std::to_string(arg.globalPtrCnt)   + "\n"
-           + "argPtrCnt: "      + std::to_string(arg.argPtrCnt)      + "\n"
-           + "instPtrCnt: "     + std::to_string(arg.instPtrCnt);
-    
-    if constexpr (std::is_same_v<T, IRDebugInfo>)
-      return arg.debugInfo;
-
-    if constexpr (std::is_same_v<T, NameToVIds>) {
-      std::string result;
-      for (const VId &vid : arg.vids) {
-        if (!result.empty()) result += "\n";
-        result += vidToString(vid);
-        result += " " + irm.vidToValue(vid)->getName().str();
-      }
-      return result;
+        if constexpr (std::is_same_v<InnerT, NameToVIds>) {
+          std::string result;
+          for (const VId &vid : inner.vids) {
+            if (!result.empty()) result += "\n";
+            result += vidToString(vid);
+            result += " " + irm.vidToValue(vid)->getName().str();
+          }
+          return result;
+        }
+      }, arg);
     }
 
     if constexpr (std::is_same_v<T, AliasOut>) {

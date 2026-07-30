@@ -18,11 +18,6 @@ LLVM_CL_IGNORE_WARNINGS_BEGIN
 static cl::opt<std::string>
     IRPath(cl::Positional, cl::desc("<ir-path>"),
            cl::Optional);
-static cl::list<std::string>
-    StubLibs("stubl", cl::desc("stub library names"));
-static cl::opt<std::string>
-    LibBasePath("libbase", cl::desc("where libs can be found"),
-           cl::ValueRequired);
 static cl::opt<std::string>
     OutPath("o", cl::desc("output path, end with .ll or .bc"),
            cl::ValueRequired, cl::Required);
@@ -36,16 +31,9 @@ LLVM_CL_IGNORE_WARNINGS_END
 
 int main(int argc, char *argv[]) {
   cl::ParseCommandLineOptions(argc, argv);
-  bool mainInstrument = !IRPath.empty();
-  if (!mainInstrument) {
-    if (StubLibs.size() != 1) report_fatal_error("see --help, one stub lib per time if in lib mode");
-    outs() << "lib instrumention\n";
-  } else outs() << "main instrumention\n";
-  
   int16_t moduleIdx;
-  auto irm = std::make_unique<IRManager>(LibBasePath);
-  if (mainInstrument) moduleIdx = irm->addMainModule(IRPath);
-  else moduleIdx = irm->addLibModule(StubLibs[0]);
+  auto irm = std::make_unique<IRManager>();
+  moduleIdx = irm->addMainModule(IRPath);
   auto &M = irm->getModule(moduleIdx);
   auto &TLI = *irm->getModuleDataByIdx(moduleIdx)._TLI;
   auto &Ctx = M.getContext();
@@ -94,13 +82,6 @@ int main(int argc, char *argv[]) {
     Twine("__register_globals_")+Twine(moduleIdx), registerGlobalsTy);
 
   std::vector<Function*> registerGlobalsOthersFn;
-
-  for (auto stubLib: StubLibs) {
-    registerGlobalsOthersFn.push_back(
-      declFn(M, Twine("__register_globals_")+
-      Twine(IRManager::libNameToModuleIdx(stubLib)), registerGlobalsTy)
-    );
-  }
 
   // 2.3 traverse all functions with definition
   {

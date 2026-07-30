@@ -1,5 +1,4 @@
 #include "IRManager.h"
-#include "hooklibs.h"
 #include "LLVMUtils.h"
 
 #include <llvm/IR/BasicBlock.h>
@@ -15,7 +14,9 @@
 #include <llvm/Config/llvm-config.h>
 #include <llvm/Demangle/Demangle.h>
 
-void IRManager::addModuleBase(const std::string &irPath, const int16_t moduleIdx){
+int16_t IRManager::addMainModule(const std::string &irPath) {
+  if (irPath.empty())
+    throw std::runtime_error("IRManager: irPath is empty");
   llvm::SMDiagnostic diag;
   auto M = llvm::parseIRFile(irPath, diag, *_ctx);
   if (!M) {
@@ -26,49 +27,24 @@ void IRManager::addModuleBase(const std::string &irPath, const int16_t moduleIdx
     throw std::runtime_error(
         "IRManager: failed to load '" + irPath + "': " + buf);
   }
-  auto &data = _modules[moduleIdx];
 
-  traverseModule(data, std::move(M), moduleIdx);
+  traverseModule(std::move(M));
 
-  if (!data._irStat.hasMain&&!moduleIdx)
-    throw std::runtime_error("IRManager: main module need main function");
-  if (data._irStat.hasMain&&moduleIdx)
-    throw std::runtime_error("IRManager: lib module can't have main function");
-}
-
-int16_t IRManager::addMainModule(const std::string &irPath) {
-  if (irPath.empty())
-    throw std::runtime_error("IRManager: irPath is empty");
-  addModuleBase(irPath, 0);
+  if (!_irStat.hasMain)
+    llvm::errs() << "IRManager: main module without main function\n";
   return 0;
 }
 
-int16_t IRManager::addLibModule(const int16_t moduleIdx) {
-  if (!moduleIdx || moduleIdx >= static_cast<int16_t>(HOOKLIBS_SIZE)) 
-    throw std::runtime_error("IRManager: invalid moduleIdx");
-  
-  auto irPath = _libBasePath + HOOKLIBS.at(static_cast<size_t>(moduleIdx)) + ".bc";
-  addModuleBase(irPath, moduleIdx);
-  return moduleIdx;
-}
 
-int16_t IRManager::libNameToModuleIdx(const std::string &libName) {
-  for (size_t i = 1; i < HOOKLIBS_SIZE; ++i)
-    if (libName == HOOKLIBS.at(i))
-      return static_cast<int16_t>(i);
-  throw std::runtime_error("IRManager: unknown lib '" + libName +
-    "'. Fix: add a driver, or register in hooklibs.h (only for libs used by the tested main module)");
-}
-
-void IRManager::traverseModule(ModuleData &data, std::unique_ptr<llvm::Module> pM, const int16_t moduleIdx) {
-  data._module = std::move(pM);
-  auto &M = *data._module;
-  data._targetTriple = llvm::Triple(M.getTargetTriple());
-  data._TLII = std::make_unique<llvm::TargetLibraryInfoImpl>(data._targetTriple);
-  data._TLI = std::make_unique<llvm::TargetLibraryInfo>(*data._TLII);
-  data._irStat.hasMain = M.getFunction("main") != nullptr;
-  data._irStat.hasGlobalCtor = M.getNamedGlobal("llvm.global_ctors") != nullptr;
-  data._irStat.hasGlobalDtor = M.getNamedGlobal("llvm.global_dtors") != nullptr;
+void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
+  _module = std::move(pM);
+  auto &M = *_module;
+  _targetTriple = llvm::Triple(M.getTargetTriple());
+  _TLII = std::make_unique<llvm::TargetLibraryInfoImpl>(_targetTriple);
+  _TLI = std::make_unique<llvm::TargetLibraryInfo>(*_TLII);
+  _irStat.hasMain = M.getFunction("main") != nullptr;
+  _irStat.hasGlobalCtor = M.getNamedGlobal("llvm.global_ctors") != nullptr;
+  _irStat.hasGlobalDtor = M.getNamedGlobal("llvm.global_dtors") != nullptr;
   int16_t globalIdx = 0;
   int16_t funcCnt = 0;
 
@@ -76,32 +52,32 @@ void IRManager::traverseModule(ModuleData &data, std::unique_ptr<llvm::Module> p
     if (GV.isDeclaration()) continue;
     if (llvmSkip(&GV)) continue;
     
-    VId vid{moduleIdx, globalIdx, 0};
+    VId vid{0, globalIdx, 0};
     _vidToValueCache[vid] = &GV;
     _valueToVidCache[&GV] = vid;
     auto mangledName = GV.getName().str();
-    _globalStringToIdxCache[mangledName] = VId{moduleIdx, globalIdx, 0};
+    _globalStringToIdxCache[mangledName] = VId{0, globalIdx, 0};
     {
       auto demangled = llvm::demangle(mangledName);
       if (demangled != mangledName)
         _manglingCache[demangled.substr(0, demangled.find('('))].push_back(std::move(mangledName));
     }
     if (GV.getValueType()->isPointerTy())
-      ++data._irStat.globalPtrCnt;
+      ++_irStat.globalPtrCnt;
     ++globalIdx;
   }
-  data._irStat.globalCnt = globalIdx;
+  _irStat.globalCnt = globalIdx;
 
   for (auto &F : M) {
     if (F.isDeclaration()) continue;
     if (llvmSkip(&F)) continue;
     ++funcCnt;
 
-    VId funcVid{moduleIdx, globalIdx, 0};
+    VId funcVid{0, globalIdx, 0};
     _vidToValueCache[funcVid] = &F;
     _valueToVidCache[&F] = funcVid;
     auto mangledName = F.getName().str();
-    _globalStringToIdxCache[mangledName] = VId{moduleIdx, globalIdx, 0};
+    _globalStringToIdxCache[mangledName] = VId{0, globalIdx, 0};
     {
       auto demangled = llvm::demangle(mangledName);
       if (demangled != mangledName)
@@ -111,29 +87,29 @@ void IRManager::traverseModule(ModuleData &data, std::unique_ptr<llvm::Module> p
     int16_t localIdx = 1;
 
     for (auto &Arg : F.args()) {
-      VId vid{moduleIdx, globalIdx, localIdx};
+      VId vid{0, globalIdx, localIdx};
       _vidToValueCache[vid] = &Arg;
       _valueToVidCache[&Arg] = vid;
       if (Arg.getType()->isPointerTy())
-        ++data._irStat.argPtrCnt;
+        ++_irStat.argPtrCnt;
       ++localIdx;
     }
     for (auto &BB : F) {
       for (auto &I : BB) {
         if (I.getType()->isVoidTy())
           continue;
-        VId vid{moduleIdx, globalIdx, localIdx};
+        VId vid{0, globalIdx, localIdx};
         _vidToValueCache[vid] = &I;
         _valueToVidCache[&I] = vid;
         if (I.getType()->isPointerTy())
-          ++data._irStat.instPtrCnt;
+          ++_irStat.instPtrCnt;
         ++localIdx;
       }
     }
     ++globalIdx;
   }
-  data._irStat.funcCnt = funcCnt;
-  data._metadata.metadata = getLLVMIRMetadataString(M);
+  _irStat.funcCnt = funcCnt;
+  _metadata.metadata = getLLVMIRMetadataString(M);
 }
 
 std::string IRManager::getLLVMIRMetadataString(const llvm::Module &M) const {
@@ -225,7 +201,7 @@ IRDebugInfo IRManager::getValueDebugInfo(const llvm::Value *V) const {
 
   auto pr = [&](const llvm::Value *Val, const char *kind) {
     auto vid = valueToVId(Val);
-    os << "vid: " << vid.moduleIdx << ":" << vid.globalIdx << ":" << vid.localIdx << "\n";
+    os << "vid: " << 0 << ":" << vid.globalIdx << ":" << vid.localIdx << "\n";
     os << kind << " ";
     if (auto *Arg = llvm::dyn_cast<llvm::Argument>(Val)) {
       Arg->getParent()->printAsOperand(os, false);

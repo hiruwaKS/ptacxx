@@ -30,8 +30,10 @@ struct CrashTestIn {};
 struct NameToVIds   { std::vector<VId> vids; };
 struct IRParseError  { std::string message; };
 
+using IRMQuery = std::variant<IRMetadata, IRStat, IRDebugInfo, NameToVIds>;
+
 using PAQuery = std::variant<std::monostate,
-  IRMetadata, IRStat, IRDebugInfo, NameToVIds, IRParseError,
+  IRMQuery, IRParseError, 
   AliasIn, AliasSetIn, PtsIn, PtIn, ReachableIn, CrashTestIn>;
 
 struct AliasOut     { llvm::AliasResult result; };
@@ -44,7 +46,7 @@ struct ErrorOut     { std::string message; };
 
 using PAResponse = std::variant<
   ErrorOut,
-  IRMetadata, IRStat, IRDebugInfo, NameToVIds,
+  IRMQuery,
   AliasOut, PtsOut, AliasSetOut, PtOut, ReachableOut, CrashTestOut>;
 
 PAQuery parse(const std::string &input, IRManager &irm);

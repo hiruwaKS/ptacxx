@@ -93,4 +93,66 @@ if (BINARY_DIR_NAME STREQUAL "lotus")
     LLVMTransformUtils
   )
 
+  add_executable(lotus-fpa lotus-fpa.cpp)
+
+# add_smoke_test_target(lotus-fpa-aa
+#   ${CMAKE_SOURCE_DIR}/tests/units/drivers/smokeFPA.py
+#   FILE_DEPS
+#   ${LLVM_TOOLS_BINARY_DIR}/clang-${LLVM_VERSION_MAJOR}
+# )
+
+  target_include_directories(lotus-fpa PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_include_directories(lotus-fpa SYSTEM PRIVATE ${LOTUS_INCLUDE_DIR})
+  target_include_directories(lotus-fpa SYSTEM PRIVATE ${LOTUS_BINARY_DIR}/../third-party)
+
+  target_link_libraries(lotus-fpa PRIVATE drivers-common)
+  target_link_libraries(lotus-fpa PRIVATE
+    lotus::CanaryFPA
+    lotus::CanaryAliasCLIUtils
+  )
+
+  add_executable(lotus-tpa lotus-tpa.cpp)
+
+# add_smoke_test_target(lotus-tpa-aa
+#   ${CMAKE_SOURCE_DIR}/tests/units/drivers/smokeTPA.py
+#   FILE_DEPS
+#   ${LLVM_TOOLS_BINARY_DIR}/clang-${LLVM_VERSION_MAJOR}
+# )
+
+  target_include_directories(lotus-tpa PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_include_directories(lotus-tpa SYSTEM PRIVATE ${LOTUS_INCLUDE_DIR})
+  target_include_directories(lotus-tpa SYSTEM PRIVATE ${LOTUS_BINARY_DIR}/../third-party)
+
+  target_link_libraries(lotus-tpa PRIVATE drivers-common)
+  target_link_libraries(lotus-tpa PRIVATE
+    lotus::FSCSPointerAnalysis
+    lotus::TPATransforms
+    lotus::CanaryAliasCLIUtils
+    lotus::CanaryLLVMUtils
+    lotus::Annotation
+  )
+
+  add_executable(lotus-aa lotus-aa.cpp)
+
+# add_smoke_test_target(lotus-aa
+#   ${CMAKE_SOURCE_DIR}/tests/units/drivers/smokeLotusAA.py
+#   FILE_DEPS
+#   ${LLVM_TOOLS_BINARY_DIR}/clang-${LLVM_VERSION_MAJOR}
+# )
+
+  target_include_directories(lotus-aa PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_include_directories(lotus-aa SYSTEM PRIVATE ${LOTUS_INCLUDE_DIR})
+  target_include_directories(lotus-aa SYSTEM PRIVATE ${LOTUS_BINARY_DIR}/../third-party)
+
+  target_link_libraries(lotus-aa PRIVATE drivers-common)
+  target_link_libraries(lotus-aa PRIVATE
+    lotus::LotusAA
+    lotus::CanaryParallel
+    lotus::CanaryGSA
+    lotus::CanaryPlatform
+    lotus::AliasSpecManager
+    lotus::CanaryLLVMUtils
+    lotus::Annotation
+  )
+
 endif()

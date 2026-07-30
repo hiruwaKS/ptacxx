@@ -30,7 +30,9 @@ if (BINARY_DIR_NAME STREQUAL "lotus")
   set(_LOTUS_LIBS
     CanaryAliasAnalysisWrapper SVFG CanaryICFG AserPTA CanaryDynamicAA
     CanaryAliasCLIUtils AliasSpecManager CanaryAliasPtsSet Andersen CanaryCUDD CanaryLLVMUtils Annotation
-    CanaryDyckAA SeaDsaAnalysis CanaryCFG CanaryParallel)
+    CanaryDyckAA SeaDsaAnalysis CanaryCFG CanaryParallel CanaryPlatform
+    CanaryGSA CanaryFPA FSCSPointerAnalysis TPATransforms LotusAA
+  )
   foreach(lib ${_LOTUS_LIBS})
     if (NOT EXISTS "${LOTUS_LIB_DIR}/lib${lib}.a")
       message(FATAL_ERROR "Lotus library (lib${lib}.a) not found in ${LOTUS_LIB_DIR}")
@@ -44,6 +46,32 @@ if (BINARY_DIR_NAME STREQUAL "lotus")
   unset(_LOTUS_LIBS)
   message(STATUS "Lotus libs check in ${LOTUS_LIB_DIR} - ok")
 
+elseif (BINARY_DIR_NAME STREQUAL "cclyzerpp")
+  if (NOT EXISTS "${CCLYZERPP_BINARY_DIR}" OR NOT EXISTS "${LLVM_DIR}")
+    message(FATAL_ERROR "CCLYZERPP_BINARY_DIR or LLVM_DIR not found")
+  endif ()
+  find_package(LLVM REQUIRED CONFIG PATHS ${LLVM_DIR} NO_DEFAULT_PATH)
+  if (NOT LLVM_VERSION_MAJOR EQUAL 14)
+    message(FATAL_ERROR "LLVM version 14 != ${LLVM_VERSION_MAJOR}")
+  endif ()
+  message(STATUS "LLVM version check - ok")
+  
+  set(CCLYZERPP_LIB_DIR ${CCLYZERPP_BINARY_DIR}) # not put under `/lib`
+  get_filename_component(CCLYZERPP_INCLUDE_DIR ${CCLYZERPP_BINARY_DIR}/../include ABSOLUTE)
+  set(_CCLYZERPP_LIBS PAPass SoufflePA)
+  foreach(lib ${_CCLYZERPP_LIBS})
+    if (NOT EXISTS "${CCLYZERPP_LIB_DIR}/lib${lib}.so")
+      message(FATAL_ERROR "Lotus library (lib${lib}.so) not found in ${CCLYZERPP_LIB_DIR}")
+    endif ()
+    add_library(cclyzerpp::${lib} UNKNOWN IMPORTED)
+    set_target_properties(cclyzerpp::${lib} PROPERTIES
+      IMPORTED_LOCATION "${CCLYZERPP_LIB_DIR}/lib${lib}.so"
+      INTERFACE_INCLUDE_DIRECTORIES "${CCLYZERPP_INCLUDE_DIR}"
+    )
+  endforeach()
+  unset(_CCLYZERPP_LIBS)
+  message(STATUS "Cclyzer++ libs check in ${CCLYZERPP_LIB_DIR} - ok")
+    
 elseif (BINARY_DIR_NAME STREQUAL "svf")
   if (NOT EXISTS "${SVF_BINARY_DIR}" OR NOT EXISTS "${LLVM_DIR}")
     message(FATAL_ERROR "SVF_BINARY_DIR or LLVM_DIR not found")
@@ -57,7 +85,7 @@ elseif (BINARY_DIR_NAME STREQUAL "svf")
   find_package(SVF REQUIRED CONFIG HINTS  ${SVF_BINARY_DIR})
 
 else()
-  message(FATAL_ERROR "BINARY_DIR_NAME must be 'lotus' or 'svf', got '${BINARY_DIR_NAME}'")
+  message(FATAL_ERROR "BINARY_DIR_NAME must be 'lotus' 'cclyzerpp' or 'svf', got '${BINARY_DIR_NAME}'")
 endif ()
 
 message(STATUS "LLVM version: ${LLVM_VERSION}")

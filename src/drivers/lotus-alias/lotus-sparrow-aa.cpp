@@ -75,9 +75,9 @@ private:
       "                            k > 32 falls back to k=0 (NoCtx)\n");
     selectGlobalPtsSetImpl(AndersenUseBDDPointsTo ? PtsSetImpl::BDD
       : PtsSetImpl::SPARSE_BITVECTOR);
-    _irm = std::make_unique<IRManager>("");
+    _irm = std::make_unique<IRManager>();
     _irm->addMainModule(InputFilename);
-    auto &M = _irm->getModule(0);
+    auto &M = _irm->getModule();
     ContextPolicy policy = getSelectedAndersenContextPolicy();
     errs() << "\nRunning analysis...\n";
     _anders = std::make_unique<Andersen>(M, policy);
@@ -95,13 +95,7 @@ private:
     PAQuery query = parse(req, *_irm);
     PAResponse response = std::visit([&](const auto &arg) -> PAResponse {
       using T = std::decay_t<decltype(arg)>;
-      if constexpr (std::is_same_v<T, IRMetadata>)
-        return arg;
-      if constexpr (std::is_same_v<T, IRStat>)
-        return arg;
-      if constexpr (std::is_same_v<T, IRDebugInfo>)
-        return arg;
-      if constexpr (std::is_same_v<T, NameToVIds>)
+      if constexpr (std::is_same_v<T, IRMQuery>)
         return arg;
       if constexpr (std::is_same_v<T, IRParseError>)
         return ErrorOut{arg.message};

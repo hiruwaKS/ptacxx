@@ -143,9 +143,9 @@ private:
         argc, argv, "AserPTA - High-Performance Pointer Analysis Tool\n");
   
     // Load IR module
-    _irm = std::make_unique<IRManager>("");
+    _irm = std::make_unique<IRManager>();
     _irm->addMainModule(InputFilename);
-    auto &M = _irm->getModule(0);
+    auto &M = _irm->getModule();
   
     errs() << "Loaded module: " << InputFilename << "\n";
     errs() << "Analysis mode: " << AnalysisMode << "\n";
@@ -264,13 +264,7 @@ private:
     PAQuery query = parse(req, *_irm);
     PAResponse response = std::visit([&](const auto &arg) -> PAResponse {
       using T = std::decay_t<decltype(arg)>;
-      if constexpr (std::is_same_v<T, IRMetadata>)
-        return arg;
-      if constexpr (std::is_same_v<T, IRStat>)
-        return arg;
-      if constexpr (std::is_same_v<T, IRDebugInfo>)
-        return arg;
-      if constexpr (std::is_same_v<T, NameToVIds>)
+      if constexpr (std::is_same_v<T, IRMQuery>)
         return arg;
       if constexpr (std::is_same_v<T, IRParseError>)
         return ErrorOut{arg.message};
