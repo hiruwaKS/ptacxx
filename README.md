@@ -31,7 +31,7 @@ cmake -B /path/to/build/svf -S . \
 ### cclyzer++
 
 ```bash
-cmake -B /path/to/build/lotus -S . \
+cmake -B /path/to/build/cclyzerpp -S . \
       -DCMAKE_C_COMPILER=/usr/bin/clang \
       -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
       -DLLVM_DIR=... \

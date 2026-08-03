@@ -57,7 +57,7 @@ elseif (BINARY_DIR_NAME STREQUAL "cclyzerpp")
   message(STATUS "LLVM version check - ok")
   
   set(CCLYZERPP_LIB_DIR ${CCLYZERPP_BINARY_DIR}) # not put under `/lib`
-  get_filename_component(CCLYZERPP_INCLUDE_DIR ${CCLYZERPP_BINARY_DIR}/../include ABSOLUTE)
+  get_filename_component(CCLYZERPP_INCLUDE_DIR ${CCLYZERPP_BINARY_DIR}/../.. ABSOLUTE)
   set(_CCLYZERPP_LIBS PAPass SoufflePA)
   foreach(lib ${_CCLYZERPP_LIBS})
     if (NOT EXISTS "${CCLYZERPP_LIB_DIR}/lib${lib}.so")
