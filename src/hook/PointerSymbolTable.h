@@ -9,13 +9,13 @@
 #include <vector>
 
 struct PtrRecord {
-  int16_t moduleIdx;
   int16_t globalIdx;
   int16_t localIdx;
   int16_t action;
+  int16_t padding;
   uint64_t ptr;
   uint64_t size; // for alloca, and heap allocator
-  uint64_t padding; // add something here?
+  uint64_t padding2; // add something here?
 };
 
 constexpr size_t BUFFER_SIZE = 16*4096/sizeof(PtrRecord);

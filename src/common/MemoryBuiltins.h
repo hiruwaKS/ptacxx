@@ -15,9 +15,9 @@ class DynamicMemoryBuiltins {
 private:
   llvm::Module *_M;
   llvm::LLVMContext *_Ctx;
-  llvm::TargetLibraryInfo *_TLI;
+  const llvm::TargetLibraryInfo *_TLI;
 public:
-  DynamicMemoryBuiltins(llvm::Module *M, llvm::TargetLibraryInfo *TLI): 
+  DynamicMemoryBuiltins(llvm::Module *M, const llvm::TargetLibraryInfo *TLI): 
     _M(M), _Ctx(&M->getContext()), _TLI(TLI) { if (!TLI) throw std::runtime_error("fatal"); }
   ~DynamicMemoryBuiltins() = default;
   DynamicMemoryBuiltins(const DynamicMemoryBuiltins&) = delete;

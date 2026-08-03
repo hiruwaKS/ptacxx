@@ -35,21 +35,41 @@ std::string join(const std::vector<std::string>& tokens, const char delimiter) {
   return result;
 }
 
-VId parseVid(const std::string& vid) {
+VId parseVid(const std::string& vid, IRManager &irm) {
   auto tokens = tokenize(vid, ":");
-  VId result={0,0,0};
-  if (tokens.size() > 0 && !tokens[0].empty())
-    result.moduleIdx = static_cast<int16_t>(toIntStrict(tokens[0]));
-  if (tokens.size() > 1 && !tokens[1].empty())
-    result.globalIdx = static_cast<int16_t>(toIntStrict(tokens[1]));
-  if (tokens.size() > 2 && !tokens[2].empty())
-    result.localIdx  = static_cast<int16_t>(toIntStrict(tokens[2]));
+  VId result={0,0};
+  if (tokens.size() > 0 && !tokens[0].empty()) {
+    auto &global = tokens[0];
+    if (global[0] == '@') {
+      auto dismangled = irm.dismangleGlobalOrFunction(global.substr(1));
+      if (!dismangled.size()) throw std::runtime_error("not found: " + global);
+      if (dismangled.size() == 1) result.globalIdx = dismangled[0].second;
+      else {
+        std::string buffer = "Ambiguous global or function name, candidates:";
+        for (const auto &pair : dismangled) {
+          if (!buffer.empty()) buffer += "\n";
+          buffer += std::to_string(pair.second) + " " + pair.first;
+        }
+        throw std::runtime_error(buffer);
+      }
+    }
+    else result.globalIdx = static_cast<int16_t>(toIntStrict(global));
+  }
+  if (tokens.size() > 1 && !tokens[1].empty()) {
+    auto &local = tokens[1];
+    if (local[0] == '%') {
+      if (auto *F = llvm::dyn_cast<llvm::Function>(irm.vidToValue(VId{result.globalIdx, 0})))
+        result.localIdx = irm.resolveLocalName(local, F);
+      else throw std::runtime_error(
+        "If you use a local name, the global name must be a function: " + vid);
+    }
+    else result.localIdx = static_cast<int16_t>(toIntStrict(local));
+  }
   return result;
 }
 
 std::string vidToString(VId vid) {
-  return join({std::to_string(vid.moduleIdx), 
-    std::to_string(vid.globalIdx),
+  return join({std::to_string(vid.globalIdx),
     std::to_string(vid.localIdx)}, ':');
 }
 
@@ -69,9 +89,9 @@ PAQuery parse(const std::string &input, IRManager &irm) {
     return PAQuery{IRMQuery{irm.getIRStat()}};
   }
 
-  if (cmd == "debug") {
+  if (cmd == "d" || cmd == "debug") {
     if (tokens.size() < 2) return PAQuery{};
-    VId vid = parseVid(tokens[1]);
+    VId vid = parseVid(tokens[1], irm);
     if (const llvm::Value *V = irm.vidToValue(vid))
       return PAQuery{IRMQuery{irm.getValueDebugInfo(V)}};
     return PAQuery{IRParseError{"invalid vid"}};
@@ -79,39 +99,39 @@ PAQuery parse(const std::string &input, IRManager &irm) {
   
   if (cmd == "name") {
     if (tokens.size() < 2) return PAQuery{};
-    return PAQuery{IRMQuery{NameToVIds{irm.globalOrFunctionToVIds(tokens[1])}}};
+    return PAQuery{IRMQuery{NameToVId{parseVid(tokens[1], irm)}}};
   }
 
   if (cmd == "alias") {
     if (tokens.size() < 3) return PAQuery{};
-    const llvm::Value *a = irm.vidToValue(parseVid(tokens[1]));
-    const llvm::Value *b = irm.vidToValue(parseVid(tokens[2]));
+    const llvm::Value *a = irm.vidToValue(parseVid(tokens[1], irm));
+    const llvm::Value *b = irm.vidToValue(parseVid(tokens[2], irm));
     return PAQuery{AliasIn{a, b}};
   }
 
   if (cmd == "aliasset") {
     if (tokens.size() < 2) return PAQuery{};
-    const llvm::Value *ptr = irm.vidToValue(parseVid(tokens[1]));
+    const llvm::Value *ptr = irm.vidToValue(parseVid(tokens[1], irm));
     return PAQuery{AliasSetIn{ptr}};
   }
 
   if (cmd == "pts") {
     if (tokens.size() < 2) return PAQuery{};
-    const llvm::Value *ptr = irm.vidToValue(parseVid(tokens[1]));
+    const llvm::Value *ptr = irm.vidToValue(parseVid(tokens[1], irm));
     return PAQuery{PtsIn{ptr}};
   }
 
   if (cmd == "pt") {
     if (tokens.size() < 3) return PAQuery{};
-    const llvm::Value *ptr = irm.vidToValue(parseVid(tokens[1]));
-    const llvm::Value *obj = irm.vidToValue(parseVid(tokens[2]));
+    const llvm::Value *ptr = irm.vidToValue(parseVid(tokens[1], irm));
+    const llvm::Value *obj = irm.vidToValue(parseVid(tokens[2], irm));
     return PAQuery{PtIn{ptr, obj}};
   }
 
   if (cmd == "reach") {
     if (tokens.size() < 3) return PAQuery{};
-    const llvm::Value *from = irm.vidToValue(parseVid(tokens[1]));
-    const llvm::Value *to   = irm.vidToValue(parseVid(tokens[2]));
+    const llvm::Value *from = irm.vidToValue(parseVid(tokens[1], irm));
+    const llvm::Value *to   = irm.vidToValue(parseVid(tokens[2], irm));
     return PAQuery{ReachableIn{from, to}};
   }
 
@@ -148,15 +168,8 @@ std::string responseToString(const PAResponse &response, IRManager &irm) {
         if constexpr (std::is_same_v<InnerT, IRDebugInfo>)
           return inner.debugInfo;
 
-        if constexpr (std::is_same_v<InnerT, NameToVIds>) {
-          std::string result;
-          for (const VId &vid : inner.vids) {
-            if (!result.empty()) result += "\n";
-            result += vidToString(vid);
-            result += " " + irm.vidToValue(vid)->getName().str();
-          }
-          return result;
-        }
+        if constexpr (std::is_same_v<InnerT, NameToVId>)
+          return vidToString(inner.vid);
       }, arg);
     }
 

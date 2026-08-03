@@ -16,7 +16,7 @@
 int toIntStrict(const std::string &s);
 std::vector<std::string> tokenize(const std::string& str, const char delimiters[] = " \n\t");
 std::string join(const std::vector<std::string>& tokens, const char delimiter);
-VId parseVid(const std::string& vid);
+VId parseVid(const std::string& vid, IRManager &irm);
 std::string vidToString(VId vid);
 
 enum ModalityResult { ResultNo, ResultMay, ResultMust };
@@ -27,10 +27,10 @@ struct PtsIn       { const llvm::Value *ptr; };
 struct PtIn        { const llvm::Value *ptr; const llvm::Value *obj; };
 struct ReachableIn { const llvm::Value *from; const llvm::Value *to; };
 struct CrashTestIn {};
-struct NameToVIds   { std::vector<VId> vids; };
+struct NameToVId   { VId vid; };
 struct IRParseError  { std::string message; };
 
-using IRMQuery = std::variant<IRMetadata, IRStat, IRDebugInfo, NameToVIds>;
+using IRMQuery = std::variant<IRMetadata, IRStat, IRDebugInfo, NameToVId>;
 
 using PAQuery = std::variant<std::monostate,
   IRMQuery, IRParseError, 

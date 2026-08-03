@@ -19,7 +19,7 @@ void PtaHook::stopAndConsume(){
       case PTR_ACTION_ALLOCA: {
         auto addr = record.ptr;
         Instance().ptrToVid[addr] = {
-          VId{record.moduleIdx, record.globalIdx, record.localIdx}, record.size};
+          VId{record.globalIdx, record.localIdx}, record.size};
         Instance().scopeStack.back().second.push_back(addr);
         break;
       }
@@ -27,7 +27,7 @@ void PtaHook::stopAndConsume(){
       case PTR_ACTION_REGION: {
         auto addr = record.ptr;
         Instance().ptrToVid[addr] = {
-          VId{record.moduleIdx, record.globalIdx, record.localIdx}, record.size};
+          VId{record.globalIdx, record.localIdx}, record.size};
         break;
       }
       case PTR_ACTION_HEAP_FREE: {
@@ -49,14 +49,14 @@ void PtaHook::stopAndConsume(){
           for (size_t j = 0; j < contextSize; ++j)
             context[j] = Instance().scopeStack[j].first;
           Instance().pts[
-            VId{record.moduleIdx, record.globalIdx, record.localIdx}]
+            VId{record.globalIdx, record.localIdx}]
             .insert({vid, std::move(context)});
         }
         break;
       }
       case PTR_ACTION_BEGINSCOPE: {
         Instance().scopeStack.push_back({
-          VId{record.moduleIdx, record.globalIdx, record.localIdx},
+          VId{record.globalIdx, record.localIdx},
           std::vector<uint64_t>()
         });
         break;
@@ -68,7 +68,7 @@ void PtaHook::stopAndConsume(){
         break;
       }
       case PTR_ACTION_LANDING: {
-        VId landingVid{record.moduleIdx, record.globalIdx, record.localIdx};
+        VId landingVid{record.globalIdx, record.localIdx};
         while (!Instance().scopeStack.empty() &&
                 !(Instance().scopeStack.back().first == landingVid)) {
           for (auto addr : Instance().scopeStack.back().second)
@@ -91,8 +91,7 @@ void PtaHook::dump(const char *dumpPath) {
     return;
   }
   auto vidToString = [](VId v) {
-    return std::to_string(v.moduleIdx) + ":" +
-           std::to_string(v.globalIdx) + ":" +
+    return std::to_string(v.globalIdx) + ":" +
            std::to_string(v.localIdx);
   };
   std::vector<VId> keys;

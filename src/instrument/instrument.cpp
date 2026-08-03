@@ -31,11 +31,11 @@ LLVM_CL_IGNORE_WARNINGS_END
 
 int main(int argc, char *argv[]) {
   cl::ParseCommandLineOptions(argc, argv);
-  int16_t moduleIdx;
   auto irm = std::make_unique<IRManager>();
-  moduleIdx = irm->addMainModule(IRPath);
-  auto &M = irm->getModule(moduleIdx);
-  auto &TLI = *irm->getModuleDataByIdx(moduleIdx)._TLI;
+  irm->addMainModule(IRPath);
+  if (!irm->getIRStat().hasMain) throw std::runtime_error("no main function found");
+  auto &M = irm->getModule();
+  auto &TLI = irm->getTLI();
   auto &Ctx = M.getContext();
   auto &DL = M.getDataLayout();
   auto dynMem = 
@@ -69,7 +69,7 @@ int main(int argc, char *argv[]) {
   auto *I64Ty = Type::getInt64Ty(Ctx);
   auto *ISizeTy = Type::getIntNTy(Ctx, sizeof(size_t) * 8);
   auto *hookInitTy = FunctionType::get(VoidTy, {ISizeTy}, false);
-  auto *hookPushTy = FunctionType::get(VoidTy, {I16Ty, I16Ty, I16Ty, I16Ty, I64Ty, I64Ty}, false);
+  auto *hookPushTy = FunctionType::get(VoidTy, {I16Ty, I16Ty, I16Ty, I64Ty, I64Ty}, false);
   auto *hookDumpTy = FunctionType::get(VoidTy, {I8PtrTy}, false);
   auto *registerGlobalsTy = FunctionType::get(I32Ty, {}, false);
 
@@ -78,8 +78,7 @@ int main(int argc, char *argv[]) {
   auto *hookInitFn = declFn(M, "__hook_init", hookInitTy);
   auto *hookPushFn = declFn(M, "__hook_push", hookPushTy);
   auto *hookDumpFn = declFn(M, "__hook_dump", hookDumpTy);
-  auto *registerGlobalsSelfFn = declFn(M, 
-    Twine("__register_globals_")+Twine(moduleIdx), registerGlobalsTy);
+  auto *registerGlobalsFn = declFn(M, "__register_globals", registerGlobalsTy);
 
   std::vector<Function*> registerGlobalsOthersFn;
 
@@ -87,7 +86,7 @@ int main(int argc, char *argv[]) {
   {
 #define CONSTI16(val) ConstantInt::get(I16Ty, static_cast<uint64_t>(static_cast<int64_t>(val)))
 #define CONSTI64(val) ConstantInt::get(I64Ty, static_cast<uint64_t>(static_cast<int64_t>(val)))
-#define VID(vid) CONSTI16((vid).moduleIdx), CONSTI16((vid).globalIdx), CONSTI16((vid).localIdx)
+#define VID(vid) CONSTI16((vid).globalIdx), CONSTI16((vid).localIdx)
     auto emitPointerProbe = [&](Value *Val, llvm::BasicBlock::iterator instPos) {
       auto vid = irm->valueToVId(Val);
       auto *ptrToIntInst = new llvm::PtrToIntInst(Val, I64Ty, "", LLVM_INS(instPos));
@@ -184,7 +183,7 @@ int main(int argc, char *argv[]) {
 
   // 2.4 put globals to registerGlobals
   {
-    auto *entryBB = BasicBlock::Create(Ctx, "", registerGlobalsSelfFn);
+    auto *entryBB = BasicBlock::Create(Ctx, "", registerGlobalsFn);
     int cnt = 0;
     for (auto *GV : globals) {
       auto vid = irm->valueToVId(GV);
@@ -204,41 +203,39 @@ int main(int argc, char *argv[]) {
 
   // 2.5 wrap main
 
-  if (!moduleIdx) {
-    // int main(int argc, char **argv) {
-    //   __hook_init(K);
-    //   __registerGlobals_0();
-    //   __registerGlobals_...();
-    //   int result = __orig_main(argc, argv);
-    //   __hook_dump(dump_path);
-    //   return result;
-    // }
-    auto *origMainFn = M.getFunction("main");
-    if (!origMainFn) report_fatal_error("no main function");
-    auto *mainTy = origMainFn->getFunctionType();
-    origMainFn->setName("__orig_main");
-    auto *newMainFn = declFn(M, "main", mainTy);
-    auto *entryBB = BasicBlock::Create(Ctx, "", newMainFn);
-    auto KCon = ConstantInt::get(ISizeTy, static_cast<uint64_t>(KContext));
-    CallInst::Create(hookInitFn, KCon, "", entryBB);
-    CallInst::Create(registerGlobalsSelfFn, "", entryBB);
-    for (auto registerGlobalsOther: registerGlobalsOthersFn) 
-      CallInst::Create(registerGlobalsOther, "", entryBB);
-    llvm::SmallVector<llvm::Value *> origArgs;
-    for (auto &arg : newMainFn->args())
-      origArgs.push_back(&arg);
-    auto *result = CallInst::Create(origMainFn, origArgs, "", entryBB);
-    auto *dumpPath = ConstantDataArray::getString(Ctx, DumpPath);
-    auto *dumpPathGlobal = new GlobalVariable(M, dumpPath->getType(), true, 
-      GlobalVariable::PrivateLinkage, dumpPath, ".dump_path");
-    auto *dumpPathPtr = ConstantExpr::getBitCast(dumpPathGlobal, I8PtrTy);
-    CallInst::Create(hookDumpFn, dumpPathPtr, "", entryBB);
-    if (result->getType()->isVoidTy()) ReturnInst::Create(Ctx, entryBB);
-    else ReturnInst::Create(Ctx, result, entryBB);
-  }
+  // int main(int argc, char **argv) {
+  //   __hook_init(K);
+  //   __registerGlobals_0();
+  //   __registerGlobals_...();
+  //   int result = __orig_main(argc, argv);
+  //   __hook_dump(dump_path);
+  //   return result;
+  // }
+  auto *origMainFn = M.getFunction("main");
+  if (!origMainFn) report_fatal_error("no main function");
+  auto *mainTy = origMainFn->getFunctionType();
+  origMainFn->setName("__orig_main");
+  auto *newMainFn = declFn(M, "main", mainTy);
+  auto *entryBB = BasicBlock::Create(Ctx, "", newMainFn);
+  auto KCon = ConstantInt::get(ISizeTy, static_cast<uint64_t>(KContext));
+  CallInst::Create(hookInitFn, KCon, "", entryBB);
+  CallInst::Create(registerGlobalsFn, "", entryBB);
+  for (auto registerGlobalsOther: registerGlobalsOthersFn) 
+    CallInst::Create(registerGlobalsOther, "", entryBB);
+  llvm::SmallVector<llvm::Value *> origArgs;
+  for (auto &arg : newMainFn->args())
+    origArgs.push_back(&arg);
+  auto *result = CallInst::Create(origMainFn, origArgs, "", entryBB);
+  auto *dumpPath = ConstantDataArray::getString(Ctx, DumpPath);
+  auto *dumpPathGlobal = new GlobalVariable(M, dumpPath->getType(), true, 
+    GlobalVariable::PrivateLinkage, dumpPath, ".dump_path");
+  auto *dumpPathPtr = ConstantExpr::getBitCast(dumpPathGlobal, I8PtrTy);
+  CallInst::Create(hookDumpFn, dumpPathPtr, "", entryBB);
+  if (result->getType()->isVoidTy()) ReturnInst::Create(Ctx, entryBB);
+  else ReturnInst::Create(Ctx, result, entryBB);
 
   // 3. dump
   if (verifyModule(M, &errs())) errs() << "Module verification failed!\n";
-  irm->dumpModule(moduleIdx, OutPath);
+  irm->dumpModule(OutPath);
   return 0;
 }

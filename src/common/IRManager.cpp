@@ -52,11 +52,11 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
     if (GV.isDeclaration()) continue;
     if (llvmSkip(&GV)) continue;
     
-    VId vid{0, globalIdx, 0};
+    VId vid{globalIdx, 0};
     _vidToValueCache[vid] = &GV;
     _valueToVidCache[&GV] = vid;
     auto mangledName = GV.getName().str();
-    _globalStringToIdxCache[mangledName] = VId{0, globalIdx, 0};
+    _globalStringToIdxCache[mangledName] = {mangledName, globalIdx};
     {
       auto demangled = llvm::demangle(mangledName);
       if (demangled != mangledName)
@@ -73,11 +73,11 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
     if (llvmSkip(&F)) continue;
     ++funcCnt;
 
-    VId funcVid{0, globalIdx, 0};
+    VId funcVid{globalIdx, 0};
     _vidToValueCache[funcVid] = &F;
     _valueToVidCache[&F] = funcVid;
     auto mangledName = F.getName().str();
-    _globalStringToIdxCache[mangledName] = VId{0, globalIdx, 0};
+    _globalStringToIdxCache[mangledName] = {mangledName, globalIdx};
     {
       auto demangled = llvm::demangle(mangledName);
       if (demangled != mangledName)
@@ -87,7 +87,7 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
     int16_t localIdx = 1;
 
     for (auto &Arg : F.args()) {
-      VId vid{0, globalIdx, localIdx};
+      VId vid{globalIdx, localIdx};
       _vidToValueCache[vid] = &Arg;
       _valueToVidCache[&Arg] = vid;
       if (Arg.getType()->isPointerTy())
@@ -98,7 +98,7 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
       for (auto &I : BB) {
         if (I.getType()->isVoidTy())
           continue;
-        VId vid{0, globalIdx, localIdx};
+        VId vid{globalIdx, localIdx};
         _vidToValueCache[vid] = &I;
         _valueToVidCache[&I] = vid;
         if (I.getType()->isPointerTy())
@@ -110,6 +110,31 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
   }
   _irStat.funcCnt = funcCnt;
   _metadata.metadata = getLLVMIRMetadataString(M);
+}
+
+int16_t IRManager::resolveLocalName(const std::string &name, const llvm::Function *F) const {
+  std::string buffer;
+  llvm::raw_string_ostream os(buffer);
+  int16_t idx = 1;
+  for (const auto &Arg : F->args()) {
+    Arg.printAsOperand(os, false);
+    os.flush();
+    if (buffer == name) return idx;
+    ++idx;
+    buffer.clear();
+  }
+  for (auto &BB : *F) {
+    for (auto &I : BB) {
+      if (I.getType()->isVoidTy())
+        continue;
+      I.printAsOperand(os, false);
+      os.flush();
+      if (buffer == name) return idx;
+      ++idx;
+      buffer.clear();
+    }
+  }
+  throw std::runtime_error("IRManager: resolveLocalName: '" + name + "' not found");
 }
 
 std::string IRManager::getLLVMIRMetadataString(const llvm::Module &M) const {
@@ -175,8 +200,9 @@ const llvm::Function * IRManager::parentFunction(const llvm::Value *V) {
   return nullptr;
 }
 
-std::vector<VId> IRManager::globalOrFunctionToVIds(const std::string &name) const {
-  std::vector<VId> results;
+std::vector<std::pair<const std::string&, int16_t>>
+  IRManager::dismangleGlobalOrFunction(const std::string &name) const {
+  std::vector<std::pair<const std::string&, int16_t>> results;
   auto it = _globalStringToIdxCache.find(name);
   if (it != _globalStringToIdxCache.end())
     results.push_back(it->second);
@@ -201,17 +227,17 @@ IRDebugInfo IRManager::getValueDebugInfo(const llvm::Value *V) const {
 
   auto pr = [&](const llvm::Value *Val, const char *kind) {
     auto vid = valueToVId(Val);
-    os << "vid: " << 0 << ":" << vid.globalIdx << ":" << vid.localIdx << "\n";
+    os << vid.globalIdx << ":" << vid.localIdx << " ";
     os << kind << " ";
     if (auto *Arg = llvm::dyn_cast<llvm::Argument>(Val)) {
       Arg->getParent()->printAsOperand(os, false);
-      os << ".";
+      os << ":";
       Arg->printAsOperand(os, false);
       os << ": " << *Val->getType() << "\n";
     }
     else if (auto *I = llvm::dyn_cast<llvm::Instruction>(Val)) {
       I->getParent()->getParent()->printAsOperand(os, false); 
-      os << ".";
+      os << ":";
       if (Val->getType()->isVoidTy()) {
         auto *BB = I->getParent();
         BB->printAsOperand(os, false);
@@ -220,7 +246,7 @@ IRDebugInfo IRManager::getValueDebugInfo(const llvm::Value *V) const {
           if (&Inst == I) break;
           idx++;
         }
-        os << ".BBIdx" << idx << ": void" << "\n";
+        os << ":BBIdx" << idx << ": void" << "\n";
       } else {
         Val->printAsOperand(os, false);
         os << ": " << *Val->getType() << "\n";
@@ -270,8 +296,9 @@ IRDebugInfo IRManager::getValueDebugInfo(const llvm::Value *V) const {
     if (!I->use_empty()) {
       if (I->getNumUses() > 10) { os << "[Used in too many places]\n"; }
       else for (auto &U : I->uses()) {
-        os << "[Used at operand " << U.getOperandNo() << "]\n";
+        os << "\t[Use] at operand " << U.getOperandNo() << "\n";
         if (auto *User = dyn_cast<llvm::Instruction>(U.getUser())) {
+          os << "\t";
           pr(User, "Instruction");
         }
       }

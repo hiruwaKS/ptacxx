@@ -48,7 +48,7 @@ private:
   IRMetadata _metadata;
   IRStat _irStat;
 
-	std::unordered_map<std::string, VId> _globalStringToIdxCache;
+	std::unordered_map<std::string, std::pair<std::string, int16_t>> _globalStringToIdxCache;
 	std::unordered_map<std::string, std::vector<std::string>> _manglingCache;
 	std::unordered_map<VId, const llvm::Value *> _vidToValueCache;
   std::unordered_map<const llvm::Value *, VId> _valueToVidCache;
@@ -63,6 +63,7 @@ public:
   // you can use this to modify the module, like instrumenting
   llvm::Module &getModule() { return *_module;  }
   const llvm::Module &getModule() const { return *_module; }
+  const llvm::TargetLibraryInfo& getTLI() const { return *_TLI; }
   const IRMetadata& getMetadata() const { return _metadata; }
   const IRStat& getIRStat() const { return _irStat; }
 
@@ -78,9 +79,12 @@ public:
     return it != _vidToValueCache.end() ? it->second : throw std::runtime_error("vid not found");
   }
 
+  int16_t resolveLocalName(const std::string &name, const llvm::Function *F) const;
+
+  /// @param name should not contain `@`
   /// @return VIds for the given global or function name (multiple if overloaded).
   /// @throws std::runtime_error if not found ("name not found").
-  std::vector<VId> globalOrFunctionToVIds(const std::string &name) const;
+  std::vector<std::pair<const std::string&, int16_t>> dismangleGlobalOrFunction(const std::string &name) const;
 
   /// @return the id, type of value, the name and the debug info (if not clipped)
   /// @warning this may be costly, don't call it in every query
