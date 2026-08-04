@@ -2,6 +2,7 @@ add_library(common STATIC
   IRManager.cpp
   MemoryBuiltins.cpp
   LLVMUtils.cpp
+  CallGraph.cpp
 )
 
 target_include_directories(common PUBLIC ${CMAKE_SOURCE_DIR}/src)

@@ -25,7 +25,7 @@ struct AliasIn     { const llvm::Value *a; const llvm::Value *b; };
 struct AliasSetIn  { const llvm::Value *ptr; };
 struct PtsIn       { const llvm::Value *ptr; };
 struct PtIn        { const llvm::Value *ptr; const llvm::Value *obj; };
-struct ReachableIn { const llvm::Value *from; const llvm::Value *to; };
+struct ReachableIn { const llvm::Function *from; const llvm::Function *to; };
 struct CrashTestIn {};
 struct NameToVId   { VId vid; };
 struct IRParseError  { std::string message; };

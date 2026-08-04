@@ -9,6 +9,7 @@
     _Pragma("clang diagnostic pop")
 
 #include <cstdint>
+#include <cassert>
 
 static constexpr int16_t PTR_ACTION_ALLOCA      = 0;
 static constexpr int16_t PTR_ACTION_HEAP_ALLOCA = 1;

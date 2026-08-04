@@ -130,16 +130,17 @@ PAQuery parse(const std::string &input, IRManager &irm) {
 
   if (cmd == "reach") {
     if (tokens.size() < 3) return PAQuery{};
-    const llvm::Value *from = irm.vidToValue(parseVid(tokens[1], irm));
-    const llvm::Value *to   = irm.vidToValue(parseVid(tokens[2], irm));
-    return PAQuery{ReachableIn{from, to}};
+    if (auto from = llvm::dyn_cast<llvm::Function>(irm.vidToValue(parseVid(tokens[1], irm))))
+      if (auto to = llvm::dyn_cast<llvm::Function>(irm.vidToValue(parseVid(tokens[2], irm))))
+        return PAQuery{ReachableIn{from, to}};
+    return PAQuery{IRParseError{"invalid function vid(s)"}};
   }
 
   if (cmd == "crash")
     return PAQuery{CrashTestIn{}};
 
   return PAQuery{};
- } catch (const std::exception &e) {
+  } catch (const std::exception &e) {
     return PAQuery{IRParseError{std::string("parse error: ") + e.what()}};
   }
 }

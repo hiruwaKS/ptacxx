@@ -5,6 +5,7 @@
 #include "llvm/IR/Module.h"
 #include <llvm/Config/llvm-config.h>
 
+/// @brief this will not skip all declarations, only the ones that start with "llvm."
 static inline bool llvmSkip(llvm::Function *F) {
   if (F->isIntrinsic()) return true;
   llvm::StringRef Name = F->getName();

@@ -6,6 +6,7 @@
 #include "drivers/common/Transport.h"
 #include "drivers/common/Postprocess.h"
 #include "common/IRManager.h"
+#include "common/CallGraph.h"
 #include "common/Common.h"
 
 #include "SVFIR/SVFIR.h" // put in the front
@@ -38,9 +39,8 @@ private:
   std::unique_ptr<WPAPass> _wpa;
   std::unordered_map<const Value *, NodeID> _valueToNode;
   std::unordered_map<NodeID, const Value *> _nodeToValue;
-  std::unordered_map<const Function *,
-  std::vector<const Function *>> _callGraph;
   std::unique_ptr<IRManager> _irm;
+  std::unique_ptr<ptacxx::CallGraph> _cg;
 private:
   void _init_impl(int argc, char **argv) {
     auto moduleNameVec = OptionBase::parseOptions(argc, argv,
@@ -54,6 +54,7 @@ private:
     _irm->addMainModule(InputFilename);
     auto &M = _irm->getModule();
     LLVMModuleSet::buildSVFModule(M);
+    _cg = std::make_unique<ptacxx::CallGraph>(&M);
     _builder = std::make_unique<SVFIRBuilder>();
     _pag.reset(_builder->build());
     _wpa = std::make_unique<WPAPass>();
@@ -90,6 +91,20 @@ private:
     }
     return true;
   }
+
+  llvm::SmallVector<ptacxx::CallGraph::ResolvedTarget, 4> indirectCallResolver(llvm::CallBase *callInst) {
+    llvm::SmallVector<ptacxx::CallGraph::ResolvedTarget, 4> targets;
+    llvm::Value *calledValue = callInst->getCalledOperand();
+    assert(calledValue);
+    std::vector<const llvm::Value *> pts;
+    if (!getPointsToSet(calledValue, pts)) return targets;
+    for (const llvm::Value *ptr : pts) {
+      if (const llvm::Function *func = llvm::dyn_cast<llvm::Function>(ptr))
+        targets.push_back(std::make_pair(ptacxx::CallEdge::DIRECT, const_cast<llvm::Function*>(func)));
+    }
+    return targets;
+  }
+
   std::string _handle_query_impl(const std::string &req){    
     PAQuery query = parse(req, *_irm);
     PAResponse response = std::visit([&](const auto &arg) -> PAResponse {
@@ -98,6 +113,15 @@ private:
         return arg;
       if constexpr (std::is_same_v<T, IRParseError>)
         return ErrorOut{arg.message};
+      if constexpr (std::is_same_v<T, ReachableIn>) {
+        _cg->buildCG([this](llvm::CallBase *callInst) {
+          return this->indirectCallResolver(callInst);
+        });
+        return ReachableOut{
+          _cg->isReachable(const_cast<llvm::Function*>(arg.from), const_cast<llvm::Function*>(arg.to)) ?
+          ResultMay : ResultNo
+        };
+      }
       if constexpr (std::is_same_v<T, PtsIn>) {
         std::vector<const llvm::Value *> pts;
         auto succ = getPointsToSet(arg.ptr, pts);
