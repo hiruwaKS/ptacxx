@@ -32,6 +32,41 @@ static inline llvm::Function *declFn(llvm::Module &M, const llvm::Twine &name,
     name, &M);
 }
 
+static inline llvm::raw_ostream& printDetailedValueId(llvm::raw_ostream &os,
+    const llvm::Value *V) {
+  switch (V->getValueID()) {
+    case llvm::Value::ArgumentVal:
+      os << "Argument";
+      break;
+    case llvm::Value::BasicBlockVal:
+      os << "BasicBlock";
+      break;
+    case llvm::Value::FunctionVal:
+      os << "Function";
+      break;
+    case llvm::Value::GlobalVariableVal:
+      os << "GlobalVariable";
+      break;
+    case llvm::Value::ConstantIntVal:
+      os << "ConstantInt";
+      break;
+    case llvm::Value::ConstantFPVal:
+      os << "ConstantFP";
+      break;
+    case llvm::Value::ConstantExprVal:
+      os << "ConstantExpr";
+      break;
+    default:
+      if (V->getValueID() >= llvm::Value::InstructionVal) {
+        if (auto *I = llvm::dyn_cast<llvm::Instruction>(V))
+          os << "Instruction:" << I->getOpcodeName();
+        else os << "UnknownInst";
+      } else os << "Unknown";
+      break;
+  }
+  return os;
+}
+
 #if LLVM_VERSION_MAJOR == 14
     #define LLVM_INS(it) (&*it)
 #else

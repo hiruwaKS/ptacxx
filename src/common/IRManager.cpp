@@ -219,53 +219,47 @@ std::vector<std::pair<const std::string&, int16_t>>
   return results;
 }
 
-IRDebugInfo IRManager::getValueDebugInfo(const llvm::Value *V) const {
+llvm::raw_ostream &IRManager::printValueDebugName(llvm::raw_ostream &os, const llvm::Value *V) const {
+  if (!V) throw std::runtime_error("fatal");
+  auto vid = valueToVId(V);
+  os << vid.globalIdx << ":" << vid.localIdx << " ";
+  if (auto *Arg = llvm::dyn_cast<llvm::Argument>(V)) {
+    Arg->getParent()->printAsOperand(os, false);
+    os << ":";
+    Arg->printAsOperand(os, false);
+  }
+  else if (auto *I = llvm::dyn_cast<llvm::Instruction>(V)) {
+    I->getParent()->getParent()->printAsOperand(os, false); 
+    os << ":";
+    if (V->getType()->isVoidTy()) {
+      auto *BB = I->getParent();
+      BB->printAsOperand(os, false);
+      unsigned idx = 0;
+      for (auto &Inst : *BB) {
+        if (&Inst == I) break;
+        idx++;
+      }
+      os << ":BBIdx" << idx;
+    } else V->printAsOperand(os, false);
+  }
+  else V->printAsOperand(os, false);
+  os << " ";
+  printDetailedValueId(os, V);
+  os << " " << *V->getType();
+#if LLVM_VERSION_MAJOR == 14
+  // check opaque pointer
+  if (auto *PT = llvm::dyn_cast<llvm::PointerType>(V->getType())) {
+    if (PT->isOpaque()) os << " (opaque)";
+  }
+#endif
+  return os;
+}
+
+llvm::raw_ostream &IRManager::printValueDebugInfo(llvm::raw_ostream &os, const llvm::Value *V) const {
   if (!V) throw std::runtime_error("fatal");
 
-  std::string buf;
-  llvm::raw_string_ostream os(buf);
-
-  auto pr = [&](const llvm::Value *Val, const char *kind) {
-    auto vid = valueToVId(Val);
-    os << vid.globalIdx << ":" << vid.localIdx << " ";
-    os << kind << " ";
-    if (auto *Arg = llvm::dyn_cast<llvm::Argument>(Val)) {
-      Arg->getParent()->printAsOperand(os, false);
-      os << ":";
-      Arg->printAsOperand(os, false);
-      os << ": " << *Val->getType() << "\n";
-    }
-    else if (auto *I = llvm::dyn_cast<llvm::Instruction>(Val)) {
-      I->getParent()->getParent()->printAsOperand(os, false); 
-      os << ":";
-      if (Val->getType()->isVoidTy()) {
-        auto *BB = I->getParent();
-        BB->printAsOperand(os, false);
-        unsigned idx = 0;
-        for (auto &Inst : *BB) {
-          if (&Inst == I) break;
-          idx++;
-        }
-        os << ":BBIdx" << idx << ": void" << "\n";
-      } else {
-        Val->printAsOperand(os, false);
-        os << ": " << *Val->getType() << "\n";
-      }
-    }
-    else {
-      Val->printAsOperand(os, false);
-      os << ": " << *Val->getType() << "\n";
-    }
-#if LLVM_VERSION_MAJOR == 14
-    // check opaque pointer
-    if (auto *PT = llvm::dyn_cast<llvm::PointerType>(Val->getType())) {
-      if (PT->isOpaque()) os << " (opaque)";
-    }
-#endif
-  };
   if (auto *I = llvm::dyn_cast<llvm::Instruction>(V)) {
-    pr(I, "Instruction");
-    if (I->getOpcodeName()) os << I->getOpcodeName() << "\n";
+    printValueDebugName(os, I) << "\n";
     if (auto DL = I->getDebugLoc()) {
       unsigned Line = DL.getLine();
       unsigned Col = DL.getCol();
@@ -296,16 +290,14 @@ IRDebugInfo IRManager::getValueDebugInfo(const llvm::Value *V) const {
     if (!I->use_empty()) {
       if (I->getNumUses() > 10) { os << "[Used in too many places]\n"; }
       else for (auto &U : I->uses()) {
-        os << "\t[Use] at operand " << U.getOperandNo() << "\n";
-        if (auto *User = dyn_cast<llvm::Instruction>(U.getUser())) {
-          os << "\t";
-          pr(User, "Instruction");
-        }
+        os << "  [Use] at operand " << U.getOperandNo() << "\n";
+        if (auto *User = dyn_cast<llvm::Instruction>(U.getUser()))
+          printValueDebugName(os << "  ", User) << "\n";
       }
     }
   }
   else if (auto *F = llvm::dyn_cast<llvm::Function>(V)) {
-    pr(F, "Function");
+    printValueDebugName(os, F) << "\n";
     if (auto *SP = F->getSubprogram()) {
       os << "Defined: " << (SP->isDefinition() ? "true" : "false") << "\n";
       if (SP->getLine() && SP->getScopeLine()) os << "LINE " << SP->getLine() << ":" << SP->getScopeLine() << "\n";
@@ -317,10 +309,10 @@ IRDebugInfo IRManager::getValueDebugInfo(const llvm::Value *V) const {
     }
   }
   else if (auto *Arg = llvm::dyn_cast<llvm::Argument>(V)) {
-    pr(Arg, "Argument");
+    printValueDebugName(os, Arg) << "\n";
   }
   else if (auto *GV = llvm::dyn_cast<llvm::GlobalVariable>(V)) {
-    pr(GV, "GlobalVarible");
+    printValueDebugName(os, GV) << "\n";
     llvm::SmallVector<llvm::DIGlobalVariableExpression *, 4> GVs;
     GV->getDebugInfo(GVs);
     for (auto *GVExpr : GVs) {
@@ -335,5 +327,5 @@ IRDebugInfo IRManager::getValueDebugInfo(const llvm::Value *V) const {
       }
     }
   }
-  return IRDebugInfo{buf};
+  return os;
 }

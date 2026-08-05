@@ -68,9 +68,8 @@ VId parseVid(const std::string& vid, IRManager &irm) {
   return result;
 }
 
-std::string vidToString(VId vid) {
-  return join({std::to_string(vid.globalIdx),
-    std::to_string(vid.localIdx)}, ':');
+std::string modalityToString(ModalityResult modal) {
+  return modal == ResultMust ? "Must" : modal == ResultMay ? "May" : "No";
 }
 
 PAQuery parse(const std::string &input, IRManager &irm) {
@@ -89,17 +88,17 @@ PAQuery parse(const std::string &input, IRManager &irm) {
     return PAQuery{IRMQuery{irm.getIRStat()}};
   }
 
-  if (cmd == "d" || cmd == "debug") {
+  if (cmd == "d" || cmd == "debug" || cmd == "name") {
     if (tokens.size() < 2) return PAQuery{};
     VId vid = parseVid(tokens[1], irm);
-    if (const llvm::Value *V = irm.vidToValue(vid))
-      return PAQuery{IRMQuery{irm.getValueDebugInfo(V)}};
-    return PAQuery{IRParseError{"invalid vid"}};
-  }
-  
-  if (cmd == "name") {
-    if (tokens.size() < 2) return PAQuery{};
-    return PAQuery{IRMQuery{NameToVId{parseVid(tokens[1], irm)}}};
+    if (const llvm::Value *V = irm.vidToValue(vid)) {
+      std::string buf;
+      llvm::raw_string_ostream os{buf};
+      (cmd == "name" ? irm.printValueDebugName(os, V) :
+        irm.printValueDebugInfo(os, V)).flush();
+      return PAQuery{IRMQuery{IRParseMessage{buf}}};
+    }
+    return PAQuery{IRParseError{"debug or name command: fatal"}};
   }
 
   if (cmd == "alias") {
@@ -136,6 +135,20 @@ PAQuery parse(const std::string &input, IRManager &irm) {
     return PAQuery{IRParseError{"invalid function vid(s)"}};
   }
 
+  if (cmd == "callout") {
+    if (tokens.size() < 2) return PAQuery{};
+    if (auto F = llvm::dyn_cast<llvm::Function>(irm.vidToValue(parseVid(tokens[1], irm))))
+      return PAQuery{CallOutEdgesIn{F}};
+    return PAQuery{IRParseError{"invalid function vid"}};
+  }
+
+  if (cmd == "callin") {
+    if (tokens.size() < 2) return PAQuery{};
+    if (auto F = llvm::dyn_cast<llvm::Function>(irm.vidToValue(parseVid(tokens[1], irm))))
+      return PAQuery{CallInEdgesIn{F}};
+    return PAQuery{IRParseError{"invalid function vid"}};
+  }
+
   if (cmd == "crash")
     return PAQuery{CrashTestIn{}};
 
@@ -166,11 +179,8 @@ std::string responseToString(const PAResponse &response, IRManager &irm) {
               + "argPtrCnt: "      + std::to_string(inner.argPtrCnt)      + "\n"
               + "instPtrCnt: "     + std::to_string(inner.instPtrCnt);
         
-        if constexpr (std::is_same_v<InnerT, IRDebugInfo>)
-          return inner.debugInfo;
-
-        if constexpr (std::is_same_v<InnerT, NameToVId>)
-          return vidToString(inner.vid);
+        if constexpr (std::is_same_v<InnerT, IRParseMessage>)
+          return inner.message;
       }, arg);
     }
 
@@ -178,42 +188,68 @@ std::string responseToString(const PAResponse &response, IRManager &irm) {
       std::string buf;
       llvm::raw_string_ostream os(buf);
       os << arg.result;
+      os.flush();
       return buf;
     }
 
     if constexpr (std::is_same_v<T, PtsOut>) {
-      std::string r = "{";
+      std::string buf;
+      llvm::raw_string_ostream os(buf);
       for (const llvm::Value *v : arg.targets) {
-        if (!r.empty()) r += " ";
         try {
-          VId vid = irm.valueToVId(v);
-          r += vidToString(vid) + ",\n";
-        } catch (...) {
-          r += "(unknown)";
+          irm.printValueDebugName(os, v) << "\n";
+        } catch (const std::exception &e) {
+          os << e.what();
         }
       }
-      return r+"}";
+      os.flush();
+      return buf;
     }
 
     if constexpr (std::is_same_v<T, AliasSetOut>) {
-      std::string r = "{";
-      for (llvm::Value *v : *arg.ptrs) {
-        if (!r.empty()) r += " ";
+      std::string buf;
+      llvm::raw_string_ostream os(buf);
+      for (const llvm::Value *v : *arg.ptrs) {
         try {
-          VId vid = irm.valueToVId(v);
-          r += vidToString(vid) + ",\n";
-        } catch (...) {
-          r += "(unknown)";
+          irm.printValueDebugName(os, v) << "\n";
+        } catch (const std::exception &e) {
+          os << e.what();
         }
       }
-      return r+"}";
+      os.flush();
+      return buf;
     }
 
     if constexpr (std::is_same_v<T, PtOut>)
-      return std::to_string(arg.result);
+      return modalityToString(arg.result);
 
     if constexpr (std::is_same_v<T, ReachableOut>)
-      return std::to_string(arg.result);
+      return modalityToString(arg.result);
+    
+    if constexpr (std::is_same_v<T, CallOutEdgesOut> || std::is_same_v<T, CallInEdgesOut>) {
+      std::string buf;
+      llvm::raw_string_ostream os(buf);
+      auto printCallEdge = [&](const ptacxx::CallEdge &edge) {
+        irm.printValueDebugName(
+          irm.printValueDebugName(
+            irm.printValueDebugName(
+              os << (edge.type == ptacxx::CallEdge::DIRECT ? "direct" : 
+                edge.type == ptacxx::CallEdge::INDIRECT ? "indirect" : "callanything")
+              << ", ", edge.caller
+            ) << ", ", edge.callsite
+          ), edge.callee
+        );
+      };
+      if constexpr (std::is_same_v<T, CallOutEdgesOut>) {
+        for (auto edge: arg.calledges) printCallEdge(edge);
+      } else {
+        for (auto edge: arg.inCalledges) printCallEdge(edge);
+        os << "\n";
+        for (auto edge: arg.inCallAnything) printCallEdge(edge);
+      }
+      os.flush();
+      return buf;
+    }
 
     if constexpr (std::is_same_v<T, CrashTestOut>)
       return "pass";

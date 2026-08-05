@@ -34,8 +34,6 @@ struct IRMetadata    { std::string metadata; };
 
 struct IRStat      { int16_t funcCnt; int16_t globalCnt; int32_t globalPtrCnt; int32_t argPtrCnt; int32_t instPtrCnt; bool hasMain; bool hasGlobalCtor; bool hasGlobalDtor; };
 
-struct IRDebugInfo   { std::string debugInfo; };
-
 class IRManager {
 private:
   std::string _mainModulePath;
@@ -86,9 +84,10 @@ public:
   /// @throws std::runtime_error if not found ("name not found").
   std::vector<std::pair<const std::string&, int16_t>> dismangleGlobalOrFunction(const std::string &name) const;
 
-  /// @return the id, type of value, the name and the debug info (if not clipped)
+  llvm::raw_ostream &printValueDebugName(llvm::raw_ostream &os, const llvm::Value *V) const;
+  /// @note the id, type of value, the name and the debug info (if not clipped)
   /// @warning this may be costly, don't call it in every query
-  IRDebugInfo getValueDebugInfo(const llvm::Value *V) const;
+  llvm::raw_ostream &printValueDebugInfo(llvm::raw_ostream &os, const llvm::Value *V) const;
 
   /// both .ll and .bc are supported
   void dumpModule(const std::string &outPath) const {
