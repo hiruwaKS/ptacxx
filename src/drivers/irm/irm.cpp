@@ -1,7 +1,7 @@
 #include "common/IRManager.h"
+#include "common/QueryInterface.h"
+#include "common/PAWrapper.h"
 #include "common/Common.h"
-#include "drivers/common/QueryInterface.h"
-#include "drivers/common/Transport.h"
 
 #include <llvm/Support/CommandLine.h>
 #include <type_traits>
@@ -17,32 +17,27 @@ static llvm::cl::opt<std::string>
            llvm::cl::Optional);
 LLVM_CL_IGNORE_WARNINGS_END
 
-class IRMQueryServer : public QueryServer<IRMQueryServer> {
-  friend class QueryServer<IRMQueryServer>;
+class IRMQueryServer : public PAWrapper {
+public:
+  IRMQueryServer(IRManager &irm) : PAWrapper(irm) {}
+  ~IRMQueryServer() override;
 private:
-  std::unique_ptr<IRManager> _irm;
-private:
-  void _init_impl(int argc, char **argv) {
-    llvm::cl::ParseCommandLineOptions(argc, argv);
-    _irm = std::make_unique<IRManager>();
-    if (!IRPath.empty())
-      _irm->addMainModule(IRPath);
-    if (IRPath.empty()) llvm::report_fatal_error("no input");
+  void init() override { return; }
+  bool getPointsToSet(Ptr, PointsToSet &) override {
+    return false;
   }
-  std::string _handle_query_impl(const std::string &req){
-    PAQuery query = parse(req, *_irm);
-    PAResponse response = std::visit([](const auto &arg) -> PAResponse {
-      using T = std::decay_t<decltype(arg)>;
-      if constexpr (std::is_same_v<T, IRMQuery>)
-        return arg;
-      if constexpr (std::is_same_v<T, IRParseError>)
-        return ErrorOut{arg.message};
-      return ErrorOut{"unknown query type or not available"};
-    }, query);
-    return responseToString(response, *_irm);
+  PTAliasResult getAliasResult(Ptr, Ptr) override {
+    return llvm::AliasResult::MayAlias;
   }
 };
 
+IRMQueryServer::~IRMQueryServer() = default;
+
 int main(int argc, char *argv[]) {
-  return IRMQueryServer().run(argc, argv);
+  llvm::cl::ParseCommandLineOptions(argc, argv);
+  IRManager irm;
+  if (!IRPath.empty())
+    irm.addMainModule(IRPath);
+  else llvm::report_fatal_error("no input");
+  return IRMQueryServer(irm).run();
 }

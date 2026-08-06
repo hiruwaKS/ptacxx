@@ -4,7 +4,7 @@ if (BINARY_DIR_NAME STREQUAL "cclyzerpp")
   target_include_directories(cclyzerpp PRIVATE ${CMAKE_SOURCE_DIR}/src)
   target_include_directories(cclyzerpp SYSTEM PRIVATE ${CCLYZERPP_INCLUDE_DIR})
 
-  target_link_libraries(cclyzerpp PRIVATE drivers-common)
+  target_link_libraries(cclyzerpp PRIVATE common)
   target_link_libraries(cclyzerpp PRIVATE
     cclyzerpp::PAPass
     cclyzerpp::SoufflePA

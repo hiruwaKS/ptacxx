@@ -91,7 +91,7 @@ PAQuery parse(const std::string &input, IRManager &irm) {
   if (cmd == "d" || cmd == "debug" || cmd == "name") {
     if (tokens.size() < 2) return PAQuery{};
     VId vid = parseVid(tokens[1], irm);
-    if (const llvm::Value *V = irm.vidToValue(vid)) {
+    if (auto *V = irm.vidToValue(vid)) {
       std::string buf;
       llvm::raw_string_ostream os{buf};
       (cmd == "name" ? irm.printValueDebugName(os, V) :
@@ -103,27 +103,27 @@ PAQuery parse(const std::string &input, IRManager &irm) {
 
   if (cmd == "alias") {
     if (tokens.size() < 3) return PAQuery{};
-    const llvm::Value *a = irm.vidToValue(parseVid(tokens[1], irm));
-    const llvm::Value *b = irm.vidToValue(parseVid(tokens[2], irm));
+    auto a = irm.vidToValue(parseVid(tokens[1], irm));
+    auto b = irm.vidToValue(parseVid(tokens[2], irm));
     return PAQuery{AliasIn{a, b}};
   }
 
   if (cmd == "aliasset") {
     if (tokens.size() < 2) return PAQuery{};
-    const llvm::Value *ptr = irm.vidToValue(parseVid(tokens[1], irm));
+    auto ptr = irm.vidToValue(parseVid(tokens[1], irm));
     return PAQuery{AliasSetIn{ptr}};
   }
 
   if (cmd == "pts") {
     if (tokens.size() < 2) return PAQuery{};
-    const llvm::Value *ptr = irm.vidToValue(parseVid(tokens[1], irm));
+    auto ptr = irm.vidToValue(parseVid(tokens[1], irm));
     return PAQuery{PtsIn{ptr}};
   }
 
   if (cmd == "pt") {
     if (tokens.size() < 3) return PAQuery{};
-    const llvm::Value *ptr = irm.vidToValue(parseVid(tokens[1], irm));
-    const llvm::Value *obj = irm.vidToValue(parseVid(tokens[2], irm));
+    auto ptr = irm.vidToValue(parseVid(tokens[1], irm));
+    auto obj = irm.vidToValue(parseVid(tokens[2], irm));
     return PAQuery{PtIn{ptr, obj}};
   }
 
@@ -146,6 +146,14 @@ PAQuery parse(const std::string &input, IRManager &irm) {
     if (tokens.size() < 2) return PAQuery{};
     if (auto F = llvm::dyn_cast<llvm::Function>(irm.vidToValue(parseVid(tokens[1], irm))))
       return PAQuery{CallInEdgesIn{F}};
+    return PAQuery{IRParseError{"invalid function vid"}};
+  }
+
+  if (cmd == "site") {
+    if (tokens.size() > 2) return PAQuery{};
+    if (tokens.size() == 1) return PAQuery{AllAllocSitesIn{}};
+    if (auto F = llvm::dyn_cast<llvm::Function>(irm.vidToValue(parseVid(tokens[1], irm))))
+      return PAQuery{AllocSitesIn{F}};
     return PAQuery{IRParseError{"invalid function vid"}};
   }
 
@@ -195,7 +203,8 @@ std::string responseToString(const PAResponse &response, IRManager &irm) {
     if constexpr (std::is_same_v<T, PtsOut>) {
       std::string buf;
       llvm::raw_string_ostream os(buf);
-      for (const llvm::Value *v : arg.targets) {
+      if (!arg.targets) os << "unknown";
+      else for (auto v : arg.targets.value()) {
         try {
           irm.printValueDebugName(os, v) << "\n";
         } catch (const std::exception &e) {
@@ -209,7 +218,7 @@ std::string responseToString(const PAResponse &response, IRManager &irm) {
     if constexpr (std::is_same_v<T, AliasSetOut>) {
       std::string buf;
       llvm::raw_string_ostream os(buf);
-      for (const llvm::Value *v : *arg.ptrs) {
+      for (llvm::Value *v : *arg.ptrs) {
         try {
           irm.printValueDebugName(os, v) << "\n";
         } catch (const std::exception &e) {
@@ -246,6 +255,20 @@ std::string responseToString(const PAResponse &response, IRManager &irm) {
         for (auto edge: arg.inCalledges) printCallEdge(edge);
         os << "\n";
         for (auto edge: arg.inCallAnything) printCallEdge(edge);
+      }
+      os.flush();
+      return buf;
+    }
+
+    if constexpr (std::is_same_v<T, AllocSitesOut>) {
+      std::string buf;
+      llvm::raw_string_ostream os(buf);
+      for (auto site: arg.sites) {
+        os << (site.type == AllocationSite::STACK ? "stack" : 
+               site.type == AllocationSite::HEAP ? "heap" :
+               site.type == AllocationSite::FUNCTION ? "function" : "global") << " ";
+        irm.printValueDebugName(os, site.site);
+        os << "\n";
       }
       os.flush();
       return buf;

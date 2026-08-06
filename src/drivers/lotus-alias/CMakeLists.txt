@@ -13,7 +13,7 @@ if (BINARY_DIR_NAME STREQUAL "lotus")
   
   target_include_directories(lotus-sparrow-aa SYSTEM PRIVATE ${LOTUS_BINARY_DIR}/../third-party)
 
-  target_link_libraries(lotus-sparrow-aa PRIVATE drivers-common)
+  target_link_libraries(lotus-sparrow-aa PRIVATE common)
   target_link_libraries(lotus-sparrow-aa PRIVATE
     lotus::Andersen
     lotus::CanaryAliasPtsSet
@@ -37,7 +37,7 @@ if (BINARY_DIR_NAME STREQUAL "lotus")
 
   target_include_directories(lotus-aser-aa SYSTEM PRIVATE ${LOTUS_BINARY_DIR}/../third-party)
  
-  target_link_libraries(lotus-aser-aa PRIVATE drivers-common)
+  target_link_libraries(lotus-aser-aa PRIVATE common)
   target_link_libraries(lotus-aser-aa PRIVATE
     lotus::AserPTA
     lotus::CanaryAliasCLIUtils
@@ -63,7 +63,7 @@ if (BINARY_DIR_NAME STREQUAL "lotus")
 
   target_include_directories(lotus-un-dyckaa SYSTEM PRIVATE ${LOTUS_BINARY_DIR}/../third-party)
 
-  target_link_libraries(lotus-un-dyckaa PRIVATE drivers-common)
+  target_link_libraries(lotus-un-dyckaa PRIVATE common)
   target_link_libraries(lotus-un-dyckaa PRIVATE
     lotus::CanaryDyckAA
     lotus::CanaryCFG
@@ -87,7 +87,7 @@ if (BINARY_DIR_NAME STREQUAL "lotus")
 
   target_include_directories(lotus-un-seadsa-aa SYSTEM PRIVATE ${LOTUS_BINARY_DIR}/../third-party)
 
-  target_link_libraries(lotus-un-seadsa-aa PRIVATE drivers-common)
+  target_link_libraries(lotus-un-seadsa-aa PRIVATE common)
   target_link_libraries(lotus-un-seadsa-aa PRIVATE
     lotus::SeaDsaAnalysis
     LLVMTransformUtils
@@ -105,7 +105,7 @@ if (BINARY_DIR_NAME STREQUAL "lotus")
   target_include_directories(lotus-fpa SYSTEM PRIVATE ${LOTUS_INCLUDE_DIR})
   target_include_directories(lotus-fpa SYSTEM PRIVATE ${LOTUS_BINARY_DIR}/../third-party)
 
-  target_link_libraries(lotus-fpa PRIVATE drivers-common)
+  target_link_libraries(lotus-fpa PRIVATE common)
   target_link_libraries(lotus-fpa PRIVATE
     lotus::CanaryFPA
     lotus::CanaryAliasCLIUtils
@@ -123,7 +123,7 @@ if (BINARY_DIR_NAME STREQUAL "lotus")
   target_include_directories(lotus-tpa SYSTEM PRIVATE ${LOTUS_INCLUDE_DIR})
   target_include_directories(lotus-tpa SYSTEM PRIVATE ${LOTUS_BINARY_DIR}/../third-party)
 
-  target_link_libraries(lotus-tpa PRIVATE drivers-common)
+  target_link_libraries(lotus-tpa PRIVATE common)
   target_link_libraries(lotus-tpa PRIVATE
     lotus::FSCSPointerAnalysis
     lotus::TPATransforms
@@ -144,7 +144,7 @@ if (BINARY_DIR_NAME STREQUAL "lotus")
   target_include_directories(lotus-aa SYSTEM PRIVATE ${LOTUS_INCLUDE_DIR})
   target_include_directories(lotus-aa SYSTEM PRIVATE ${LOTUS_BINARY_DIR}/../third-party)
 
-  target_link_libraries(lotus-aa PRIVATE drivers-common)
+  target_link_libraries(lotus-aa PRIVATE common)
   target_link_libraries(lotus-aa PRIVATE
     lotus::LotusAA
     lotus::CanaryParallel

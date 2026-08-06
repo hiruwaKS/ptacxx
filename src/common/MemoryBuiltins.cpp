@@ -3,69 +3,77 @@
 
 using namespace llvm;
 
+bool DynamicMemoryBuiltins::isHeapAllocationSite(CallBase *CB) {
+  auto F = validDirectCall(CB);
+  auto libFunc = getMemLibFunc(F);
+  return libFunc != LibFn_not_registered && libFunc < DynamicMemoryBuiltins::MEMLIBFUNC_MARK_FREE;
+}
+
 Value *DynamicMemoryBuiltins::getDynamicAllocationSize(CallBase *CB) {
+  auto &_M = _irm.getModule();
+  auto &_Ctx = getThreadLocalContext();
   auto F = validDirectCall(CB);
   auto libFunc = getMemLibFunc(F);
   switch (libFunc) {
     case LibFn_not_registered: return nullptr;
     case LibFn_group_strdup:
     case LibFn_group_strndup: {
-      Function* strlenFn = _M->getFunction("strlen");
+      Function* strlenFn = _M.getFunction("strlen");
       if (!strlenFn) {
-        auto sizeTy = _M->getDataLayout().getIntPtrType(*_Ctx, 0);
-        strlenFn = cast<Function>(_M->getOrInsertFunction("strlen",sizeTy,
+        auto sizeTy = _M.getDataLayout().getIntPtrType(_Ctx, 0);
+        strlenFn = cast<Function>(_M.getOrInsertFunction("strlen",sizeTy,
 #if LLVM_VERSION_MAJOR <= 14
-          Type::getInt8PtrTy(*_Ctx)
+          Type::getInt8PtrTy(_Ctx)
 #else
-          PointerType::get(*_Ctx, 0)
+          PointerType::get(_Ctx, 0)
 #endif
         ).getCallee());
       }
       auto str = CB->getArgOperand(0);
       auto strlen = CallInst::Create(strlenFn, {str}, "", LLVM_INS(CB->getIterator()));
-      auto one = ConstantInt::get(Type::getInt64Ty(*_Ctx), 1);
+      auto one = ConstantInt::get(Type::getInt64Ty(_Ctx), 1);
       if (libFunc == MemLibFunc::LibFn_group_strdup) {
         // for strdup, strlen + 1
-       return ensureI64(_Ctx, BinaryOperator::CreateAdd(strlen, one, "", LLVM_INS(CB->getIterator())), CB->getIterator());
+       return ensureI64(BinaryOperator::CreateAdd(strlen, one, "", LLVM_INS(CB->getIterator())), CB->getIterator());
       } else {
         // for strndup, min(strlen(s), n) + 1
         auto n = CB->getArgOperand(1);
        auto cmp = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_ULT,
          strlen, n, "", LLVM_INS(CB->getIterator()));
        auto min = SelectInst::Create(cmp, strlen, n, "", LLVM_INS(CB->getIterator()));
-       return ensureI64(_Ctx, BinaryOperator::CreateAdd(min, one, "", LLVM_INS(CB->getIterator())), CB->getIterator());
+       return ensureI64(BinaryOperator::CreateAdd(min, one, "", LLVM_INS(CB->getIterator())), CB->getIterator());
       }
     }
     case LibFn_valloc:
     case LibFn_malloc:
     case LibFn_vec_malloc:
     case LibFn_pvalloc:
-      return ensureI64(_Ctx, CB->getArgOperand(0), CB->getIterator());
+      return ensureI64(CB->getArgOperand(0), CB->getIterator());
     case LibFn_aligned_alloc:
     case LibFn_memalign: {
-      return ensureI64(_Ctx, CB->getArgOperand(1), CB->getIterator());
+      return ensureI64(CB->getArgOperand(1), CB->getIterator());
     }
     case LibFn_calloc:
     case LibFn_vec_calloc: {
       auto num = CB->getArgOperand(0);
       auto size = CB->getArgOperand(1);
-      return ensureI64(_Ctx, BinaryOperator::CreateMul(num, size, "", LLVM_INS(CB->getIterator())), CB->getIterator());
+      return ensureI64(BinaryOperator::CreateMul(num, size, "", LLVM_INS(CB->getIterator())), CB->getIterator());
     }
     case LibFn_group_new: 
       return CB->getArgOperand(0);
     case LibFn_group_new_array: {
       auto num = CB->getArgOperand(0);
-      auto one = ConstantInt::get(Type::getInt64Ty(*_Ctx), 1);
-      return ensureI64(_Ctx, BinaryOperator::CreateAdd(num, one, "", LLVM_INS(CB->getIterator())), CB->getIterator());
+      auto one = ConstantInt::get(Type::getInt64Ty(_Ctx), 1);
+      return ensureI64(BinaryOperator::CreateAdd(num, one, "", LLVM_INS(CB->getIterator())), CB->getIterator());
     }
     case LibFn_realloc:
     case LibFn_reallocf:
     case LibFn_vec_realloc:
-      return ensureI64(_Ctx, CB->getArgOperand(1), CB->getIterator());
+      return ensureI64(CB->getArgOperand(1), CB->getIterator());
     case LibFn_reallocarray: {
       auto num = CB->getArgOperand(1);
       auto size = CB->getArgOperand(2);
-      return ensureI64(_Ctx, BinaryOperator::CreateMul(num, size, "", LLVM_INS(CB->getIterator())), CB->getIterator());
+      return ensureI64(BinaryOperator::CreateMul(num, size, "", LLVM_INS(CB->getIterator())), CB->getIterator());
     }
     case LibFn_free:
     case LibFn_vec_free:
@@ -88,7 +96,8 @@ Value *DynamicMemoryBuiltins::getFreedOperand(const CallBase *CB) {
 DynamicMemoryBuiltins::MemLibFunc
   DynamicMemoryBuiltins::getMemLibFunc(const Function *callee) {
   LibFunc libFunc;
-  bool suc = _TLI->getLibFunc(*callee, libFunc);
+  auto &_TLI = _irm.getTLI();
+  bool suc = _TLI.getLibFunc(*callee, libFunc);
   if (!suc) return MemLibFunc::LibFn_not_registered;
   switch (libFunc) {
     case LibFunc_strdup:

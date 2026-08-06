@@ -3,9 +3,7 @@
        for documentation.
  */
 
-#include "drivers/common/QueryInterface.h"
-#include "drivers/common/Transport.h"
-#include "drivers/common/Postprocess.h"
+#include "common/PAWrapper.h"
 #include "common/IRManager.h"
 #include "common/Common.h"
 
@@ -55,26 +53,16 @@ static cl::opt<bool> Verbose("v", cl::desc("Verbose output"), cl::init(false));
 
 LLVM_CL_IGNORE_WARNINGS_END
 
-class LotusAAQueryServer : public QueryServer<LotusAAQueryServer> {
-  friend class QueryServer<LotusAAQueryServer>;
+class LotusAAQueryServer : public IncluPAWrapper {
 private:
-  std::unique_ptr<IRManager> _irm;
   std::unique_ptr<legacy::PassManager> _passes;
   std::unique_ptr<LotusAA> _lotusaa;
+public:
+  LotusAAQueryServer(IRManager &irm) : IncluPAWrapper(irm) {}
+  ~LotusAAQueryServer() override;
 private:
-  void _init_impl(int argc, char **argv) {
-    InitLLVM X(argc, argv);
-  
-    PassRegistry &Registry = *PassRegistry::getPassRegistry();
-    initializeCore(Registry);
-    initializeAnalysis(Registry);
-  
-    cl::ParseCommandLineOptions(argc, argv, "LotusAA Pointer Analysis Tool\n");
-  
-    // Load IR module
-    _irm = std::make_unique<IRManager>();
-    _irm->addMainModule(InputFilename);
-    auto &M = _irm->getModule();
+  void init() override {
+    auto &M = _irm.getModule();
 
     // Create output file if specified
     std::unique_ptr<ToolOutputFile> Out;
@@ -122,12 +110,11 @@ private:
     // Write output file if specified
     if (Out) Out->keep();
   }
-  static bool getPointsToSet(LotusAA* _lotusaa, 
-      const Value *ptr, std::vector<const Value *> &pts) {
+  bool getPointsToSet(Ptr value, PointsToSet &pts) override {
     /// TODO:  use  `getLoadValues` for path-sensitivity, and handle the interprocedural case
     // it ptr is a global variable, we just put itself into the pts
-    if (isa<GlobalVariable>(ptr)) pts.push_back(ptr);
-    if (auto *I = const_cast<Instruction *>(dyn_cast<Instruction>(ptr))) {
+    if (isa<GlobalVariable>(value)) pts.push_back(value);
+    else if (auto *I = dyn_cast<Instruction>(value)) {
       auto *_intra = _lotusaa->getPtGraph(I->getFunction());
       if (!_intra) return false;
       auto *res = _intra->findPTResult(I, false);
@@ -145,44 +132,24 @@ private:
       }
       return true;
     }
+    assert("bad value");
     return false;
-  }
-  std::string _handle_query_impl(const std::string &req){
-    PAQuery query = parse(req, *_irm);
-    PAResponse response = std::visit([&](const auto &arg) -> PAResponse {
-      using T = std::decay_t<decltype(arg)>;
-      if constexpr (std::is_same_v<T, IRMQuery>)
-        return arg;
-      if constexpr (std::is_same_v<T, IRParseError>)
-        return ErrorOut{arg.message};
-      if constexpr (std::is_same_v<T, PtsIn>) {
-        std::vector<const llvm::Value *> pts;
-        auto succ = getPointsToSet(_lotusaa.get(), arg.ptr, pts);
-        if (!succ) return PtsOut{{}};
-        return PtsOut{pts};
-      }
-      if constexpr (std::is_same_v<T, PtIn>) {
-        std::vector<const llvm::Value *> pts1;
-        auto succ = getPointsToSet(_lotusaa.get(), arg.ptr, pts1);
-        if (!succ) return PtOut{ResultNo};
-        return PtOut{mayPointTo(pts1, arg.obj) ? ResultMay: ResultNo};
-      }
-      if constexpr (std::is_same_v<T, AliasIn>) {
-        std::vector<const llvm::Value *> pts1;
-        std::vector<const llvm::Value *> pts2;
-        auto succ1 = getPointsToSet(_lotusaa.get(), arg.a, pts1);
-        auto succ2 = getPointsToSet(_lotusaa.get(), arg.b, pts2);
-        if (!succ1 || !succ2) return AliasOut{llvm::AliasResult::NoAlias};
-        return AliasOut{ aliasByIntersection(pts1, pts2) ? 
-          llvm::AliasResult::MayAlias : llvm::AliasResult::NoAlias
-        };
-      }
-      return ErrorOut{"unknown query type or not available"};
-    }, query);
-    return responseToString(response, *_irm);
   }
 };
 
+LotusAAQueryServer::~LotusAAQueryServer() = default;
+
 int main(int argc, char **argv) {
-  return LotusAAQueryServer().run(argc, argv);
+  InitLLVM X(argc, argv);
+
+  PassRegistry &Registry = *PassRegistry::getPassRegistry();
+  initializeCore(Registry);
+  initializeAnalysis(Registry);
+
+  cl::ParseCommandLineOptions(argc, argv, "LotusAA Pointer Analysis Tool\n");
+  
+  IRManager irm;
+  // Load IR module
+  irm.addMainModule(InputFilename);
+  return LotusAAQueryServer(irm).run();
 }

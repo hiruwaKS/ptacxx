@@ -3,9 +3,8 @@
        for documentation.
  */
 
-#include "drivers/common/QueryInterface.h"
-#include "drivers/common/Transport.h"
-#include "drivers/common/Postprocess.h"
+#include "common/PAWrapper.h"
+#include "common/QueryInterface.h"
 #include "common/IRManager.h"
 #include "common/Common.h"
 
@@ -123,19 +122,16 @@ static void PrintResults(GlobalContext *GCtx) {
   }
 }
 
-class FPAQueryServer : public QueryServer<FPAQueryServer> {
-  friend class QueryServer<FPAQueryServer>;
+class FPAQueryServer : public IncluPAWrapper {
 private:
-  std::unique_ptr<IRManager> _irm;
   std::unique_ptr<CallGraphPass> _fpa;
+public:
+  FPAQueryServer(IRManager &irm) : IncluPAWrapper(irm) {}
+  ~FPAQueryServer() override;
 private:
-  void _init_impl(int argc, char **argv) {
-    InitLLVM X(argc, argv);
-    cl::ParseCommandLineOptions(argc, argv, "global analysis\n");
-  
-    _irm = std::make_unique<IRManager>();
-    _irm->addMainModule(InputFilename);
-    auto &M = _irm->getModule();
+  void init() override {
+    Module &M = _irm.getModule();
+    
     StringRef MName = StringRef(strdup(InputFilename.data()));
     GlobalCtx.Modules.push_back(std::make_pair(&M, MName)); // TODO: potential double free
     GlobalCtx.ModuleMaps[&M] = InputFilename;
@@ -159,30 +155,24 @@ private:
 
     PrintResults(&GlobalCtx);
   }
-  std::string _handle_query_impl(const std::string &req){    
-    PAQuery query = parse(req, *_irm);
-    PAResponse response = std::visit([&](const auto &arg) -> PAResponse {
-      using T = std::decay_t<decltype(arg)>;
-      if constexpr (std::is_same_v<T, IRMQuery>)
-        return arg;
-      if constexpr (std::is_same_v<T, IRParseError>)
-        return ErrorOut{arg.message};
-      if constexpr (std::is_same_v<T, PtsIn>) {
-        std::vector<const llvm::Value *> targets;
-        llvm::SmallPtrSet<Function *, 8> FuncSet;
-        if (auto *CI = const_cast<CallInst *>(dyn_cast<CallInst>(arg.ptr))) {
-          _fpa->analyzeIndCall(CI, &FuncSet);
-          targets.insert(targets.end(), FuncSet.begin(), FuncSet.end());
-          return PtsOut{targets};
-        }
-        return ErrorOut{"fpa can only resolve callsite"};
-      }
-      return ErrorOut{"unknown query type or not available"};
-    }, query);
-    return responseToString(response, *_irm);
+  bool getPointsToSet(Ptr value, PointsToSet &pts) override {
+    llvm::SmallPtrSet<Function *, 8> FuncSet;
+    if (auto *CI = const_cast<CallInst *>(dyn_cast<CallInst>(value))) {
+      _fpa->analyzeIndCall(CI, &FuncSet);
+      for (auto *F : FuncSet) pts.push_back(F);
+      return true;
+    }
+    throw std::runtime_error("fpa can only resolve callsite");
   }
 };
 
+FPAQueryServer::~FPAQueryServer() = default;
+
 int main(int argc, char **argv) {
-  return FPAQueryServer().run(argc, argv);
+InitLLVM X(argc, argv);
+  cl::ParseCommandLineOptions(argc, argv, "global analysis\n");
+  
+  IRManager irm;
+  irm.addMainModule(InputFilename);
+  return FPAQueryServer(irm).run();
 }

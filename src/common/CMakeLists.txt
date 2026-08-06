@@ -3,6 +3,8 @@ add_library(common STATIC
   MemoryBuiltins.cpp
   LLVMUtils.cpp
   CallGraph.cpp
+  QueryInterface.cpp
+  PAWrapper.cpp
 )
 
 target_include_directories(common PUBLIC ${CMAKE_SOURCE_DIR}/src)

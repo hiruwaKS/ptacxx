@@ -2,9 +2,8 @@
  * Adapted from <lotus>/tools/alias/lotus-alias-dyck-aa.cpp
  */
 
-#include "drivers/common/QueryInterface.h"
-#include "drivers/common/Transport.h"
-#include "drivers/common/Postprocess.h"
+#include "common/PAWrapper.h"
+#include "common/QueryInterface.h"
 #include "common/IRManager.h"
 #include "common/Common.h"
 
@@ -39,20 +38,16 @@ static cl::opt<bool> OnlyStatistics("s", cl::desc("Only output statistics"),
 
 LLVM_CL_IGNORE_WARNINGS_END
 
-class DyckAAQueryServer : public QueryServer<DyckAAQueryServer> {
-  friend class QueryServer<DyckAAQueryServer>;
+class DyckAAQueryServer : public UnifiPAWrapper {
 private:
   std::unique_ptr<legacy::PassManager> _passes;
   std::unique_ptr<DyckAliasAnalysis> _DyckAA;
-  std::unique_ptr<IRManager> _irm;
+public:
+  DyckAAQueryServer(IRManager &irm) : UnifiPAWrapper(irm) {}
+  ~DyckAAQueryServer() override;
 private:
-  void _init_impl(int argc, char **argv) {
-    InitLLVM X(argc, argv);
-    cl::ParseCommandLineOptions(argc, argv, "DyckAA Pointer Analysis Tool\n");
-
-    _irm = std::make_unique<IRManager>();
-    _irm->addMainModule(InputFilename);
-    auto &M = _irm->getModule();
+  void init() override {
+    auto &M = _irm.getModule();
 
     if (Verbose) {
       errs() << "Running DyckAA on " << M.getName() << " ("
@@ -88,29 +83,19 @@ private:
       PrintStatistics(errs());
     }
   }
-  std::string _handle_query_impl(const std::string &req){
-    PAQuery query = parse(req, *_irm);
-    PAResponse response = std::visit([&](const auto &arg) -> PAResponse {
-      using T = std::decay_t<decltype(arg)>;
-      if constexpr (std::is_same_v<T, IRMQuery>)
-        return arg;
-      if constexpr (std::is_same_v<T, IRParseError>)
-        return ErrorOut{arg.message};
-      if constexpr (std::is_same_v<T, AliasIn>) {
-        auto may = _DyckAA->mayAlias(const_cast<Value*>(arg.a), const_cast<Value*>(arg.b));
-        return AliasOut{ may ? 
-          llvm::AliasResult::MayAlias : llvm::AliasResult::NoAlias
-        };
-      }
-      if constexpr (std::is_same_v<T, AliasSetIn>) {
-        return AliasSetOut{ _DyckAA->getAliasSet(const_cast<Value*>(arg.ptr)) };
-      }
-      return ErrorOut{"unknown query type or not available"};
-    }, query);
-    return responseToString(response, *_irm);
-  } 
+  PTAliasResult getAliasResult(Ptr a, Ptr b) override {
+    auto may = _DyckAA->mayAlias(const_cast<Value*>(a), const_cast<Value*>(b));
+    return  may ? 
+      llvm::AliasResult::MayAlias : llvm::AliasResult::NoAlias;
+  }
 };
 
+DyckAAQueryServer::~DyckAAQueryServer() = default;
+
 int main(int argc, char **argv) {
-  return DyckAAQueryServer().run(argc, argv);
+  InitLLVM X(argc, argv);
+  cl::ParseCommandLineOptions(argc, argv, "DyckAA Pointer Analysis Tool\n");
+  auto irm = IRManager();
+  irm.addMainModule(InputFilename);
+  return DyckAAQueryServer(irm).run();
 }

@@ -1,9 +1,11 @@
 #pragma once
 
-#include "llvm/Analysis/MemoryBuiltins.h"
-#include "llvm/Analysis/TargetLibraryInfo.h"
-#include "llvm/IR/Function.h"
-#include "llvm/IR/Value.h"
+#include "IRManager.h"
+
+#include <llvm/Analysis/MemoryBuiltins.h>
+#include <llvm/Analysis/TargetLibraryInfo.h>
+#include <llvm/IR/Function.h>
+#include <llvm/IR/Value.h>
 
 /// Dynamic memory buitins info through instrumentation
 
@@ -13,15 +15,14 @@
 /// This module is experimental, not fully tested
 class DynamicMemoryBuiltins {
 private:
-  llvm::Module *_M;
-  llvm::LLVMContext *_Ctx;
-  const llvm::TargetLibraryInfo *_TLI;
+  IRManager &_irm;
 public:
-  DynamicMemoryBuiltins(llvm::Module *M, const llvm::TargetLibraryInfo *TLI): 
-    _M(M), _Ctx(&M->getContext()), _TLI(TLI) { if (!TLI) throw std::runtime_error("fatal"); }
+  DynamicMemoryBuiltins(IRManager &irm) : _irm(irm) {}
   ~DynamicMemoryBuiltins() = default;
   DynamicMemoryBuiltins(const DynamicMemoryBuiltins&) = delete;
   DynamicMemoryBuiltins& operator=(const DynamicMemoryBuiltins&) = delete;
+
+  bool isHeapAllocationSite(llvm::CallBase *CB);
   
   /// @note realloc is also considered as a free (and an allocation)
   /// @return nullptr if not allocation call, will do instrument, ensure i64

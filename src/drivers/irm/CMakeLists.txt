@@ -10,4 +10,4 @@ add_smoke_test_target(irm
 
 target_include_directories(irm PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
-target_link_libraries(irm PRIVATE drivers-common)
+target_link_libraries(irm PRIVATE common)

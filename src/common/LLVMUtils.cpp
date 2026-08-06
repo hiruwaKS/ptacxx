@@ -4,9 +4,14 @@
 
 using namespace llvm;
 
-Value* ensureI64(LLVMContext *_Ctx, 
-  Value *V, BasicBlock::iterator instPos) {
-  auto i64Ty = Type::getInt64Ty(*_Ctx);
+LLVM_CL_IGNORE_WARNINGS_BEGIN
+inline llvm::LLVMContext &getThreadLocalContext() {
+  static thread_local LLVMContext ctx; return ctx;
+}
+LLVM_CL_IGNORE_WARNINGS_END
+
+Value* ensureI64(Value *V, BasicBlock::iterator instPos) {
+  auto i64Ty = Type::getInt64Ty(getThreadLocalContext());
   if (V->getType() == i64Ty) return V;
   if (V->getType()->isIntegerTy())
     return CastInst::CreateSExtOrBitCast(V, i64Ty, "", LLVM_INS(instPos)); // will someone pass -1?

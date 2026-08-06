@@ -1,9 +1,14 @@
 #pragma once
 
-#include "llvm/IR/Function.h"
-#include "llvm/IR/GlobalVariable.h"
-#include "llvm/IR/Module.h"
+#include "Common.h"
+
+#include <llvm/IR/Function.h>
+#include <llvm/IR/GlobalVariable.h>
+#include <llvm/IR/Module.h>
+#include <llvm/IR/LLVMContext.h>
 #include <llvm/Config/llvm-config.h>
+
+llvm::LLVMContext &getThreadLocalContext();
 
 /// @brief this will not skip all declarations, only the ones that start with "llvm."
 static inline bool llvmSkip(llvm::Function *F) {
@@ -73,4 +78,4 @@ static inline llvm::raw_ostream& printDetailedValueId(llvm::raw_ostream &os,
     #define LLVM_INS(it) (it)
 #endif
 
-llvm::Value* ensureI64(llvm::LLVMContext *_Ctx, llvm::Value *V, llvm::BasicBlock::iterator instPos);
+llvm::Value* ensureI64(llvm::Value *V, llvm::BasicBlock::iterator instPos);

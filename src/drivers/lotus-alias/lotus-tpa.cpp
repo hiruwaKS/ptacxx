@@ -3,9 +3,8 @@
        for documentation.
  */
 
-#include "drivers/common/QueryInterface.h"
-#include "drivers/common/Transport.h"
-#include "drivers/common/Postprocess.h"
+#include "common/PAWrapper.h"
+#include "common/QueryInterface.h"
 #include "common/IRManager.h"
 #include "common/Common.h"
 
@@ -137,26 +136,15 @@ collectCandidatePointerValues(const Module &M,
   }
 }
 
-class TPAQueryServer : public QueryServer<TPAQueryServer> {
-  friend class QueryServer<TPAQueryServer>;
+class TPAQueryServer : public IncluPAWrapper {
 private:
-  std::unique_ptr<IRManager> _irm;
   std::unique_ptr<tpa::SemiSparsePointerAnalysis> _tpa;
+public:
+  TPAQueryServer(IRManager &irm) : IncluPAWrapper(irm) {}
+  ~TPAQueryServer() override;
 private:
-  void _init_impl(int argc, char **argv) {
-    InitLLVM X(argc, argv);
-  
-    cl::ParseCommandLineOptions(
-        argc, argv,
-        "TPA (flow-/context-sensitive semi-sparse pointer analysis) tool\n");
-  
-    // Initialize spdlog with default pattern
-    spdlog::set_pattern("%^[%l]%$ %v");
-  
-    // Load IR module
-    _irm = std::make_unique<IRManager>();
-    _irm->addMainModule(InputFilename);
-    auto &M = _irm->getModule();
+  void init() override {
+    auto &M = _irm.getModule();
   
     if (!NoPrepass) {
       LOG_INFO("Running TPA IR normalization prepasses...");
@@ -296,10 +284,9 @@ private:
       }
     }
   }
-  static bool getPointsToSet(tpa::SemiSparsePointerAnalysis* _tpa,
-      const Value *ptr, std::vector<const Value *> &pts) {
+  bool getPointsToSet(Ptr value, PointsToSet &pts) override {
     // tpa forces to acquire alloc type before getting value
-    auto ptsSet = _tpa->getPtsSet(ptr);
+    auto ptsSet = _tpa.get()->getPtsSet(value);
     for (const tpa::MemoryObject *obj : ptsSet) {
       if (obj->isSpecialObject())
           continue;
@@ -325,42 +312,22 @@ private:
     }
     return true;
   }
-  std::string _handle_query_impl(const std::string &req){    
-    PAQuery query = parse(req, *_irm);
-    PAResponse response = std::visit([&](const auto &arg) -> PAResponse {
-      using T = std::decay_t<decltype(arg)>;
-      if constexpr (std::is_same_v<T, IRMQuery>)
-        return arg;
-      if constexpr (std::is_same_v<T, IRParseError>)
-        return ErrorOut{arg.message};
-      if constexpr (std::is_same_v<T, PtsIn>) {
-        std::vector<const llvm::Value *> pts;
-        auto succ = getPointsToSet(_tpa.get(), arg.ptr, pts);
-        if (!succ) return PtsOut{{}};
-        return PtsOut{pts};
-      }
-      if constexpr (std::is_same_v<T, PtIn>) {
-        std::vector<const llvm::Value *> pts;
-        auto succ = getPointsToSet(_tpa.get(), arg.ptr, pts);
-        if (!succ) return PtOut{ResultNo};
-        return PtOut{mayPointTo(pts, arg.obj) ? ResultMay: ResultNo};
-      }
-      if constexpr (std::is_same_v<T, AliasIn>) {
-        std::vector<const llvm::Value *> pts1;
-        std::vector<const llvm::Value *> pts2;
-        auto succ1 = getPointsToSet(_tpa.get(), arg.a, pts1);
-        auto succ2 = getPointsToSet(_tpa.get(), arg.b, pts2);
-        if (!succ1 || !succ2) return AliasOut{llvm::AliasResult::NoAlias};
-        return AliasOut{ aliasByIntersection(pts1, pts2) ? 
-          llvm::AliasResult::MayAlias : llvm::AliasResult::NoAlias
-        };
-      }
-      return ErrorOut{"unknown query type or not available"};
-    }, query);
-    return responseToString(response, *_irm);
-  }
 };
 
+TPAQueryServer::~TPAQueryServer() = default;
+
 int main(int argc, char **argv) {
-  return TPAQueryServer().run(argc, argv);
+  InitLLVM X(argc, argv);
+
+  cl::ParseCommandLineOptions(
+      argc, argv,
+      "TPA (flow-/context-sensitive semi-sparse pointer analysis) tool\n");
+
+  // Initialize spdlog with default pattern
+  spdlog::set_pattern("%^[%l]%$ %v");
+
+  // Load IR module
+  auto irm = IRManager();
+  irm.addMainModule(InputFilename);
+  return TPAQueryServer(irm).run();
 }

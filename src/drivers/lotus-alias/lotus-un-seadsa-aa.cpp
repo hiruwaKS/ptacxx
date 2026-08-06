@@ -2,9 +2,8 @@
  * Adapted from <lotus>/tools/alias/lotus-alias-seadsa-tool.cpp
  */
 
-#include "drivers/common/QueryInterface.h"
-#include "drivers/common/Transport.h"
-#include "drivers/common/Postprocess.h"
+#include "common/PAWrapper.h"
+#include "common/QueryInterface.h"
 #include "common/IRManager.h"
 #include "common/Common.h"
 
@@ -72,23 +71,17 @@ static RegisterPass<seadsa::DsaLibFuncInfo>
       "Identifies library functions for special handling");
 LLVM_CL_IGNORE_WARNINGS_END
 
-class SeadsaQueryServer : public QueryServer<SeadsaQueryServer> {
-  friend class QueryServer<SeadsaQueryServer>;
+class SeadsaQueryServer : public UnifiPAWrapper {
 private:
   std::unique_ptr<legacy::PassManager> _passes;
   std::unique_ptr<seadsa::SeaDsaAAWrapperPass> _seadsa;
-  std::unique_ptr<IRManager> _irm;
   std::unique_ptr<ToolOutputFile> _asmOutput;
+public:
+  SeadsaQueryServer(IRManager &irm) : UnifiPAWrapper(irm) {}
+  ~SeadsaQueryServer() override;
 private:
-  void _init_impl(int argc, char **argv) {
-    EnableDebugBuffering = true;
-    InitLLVM X2(argc, argv);
-    cl::ParseCommandLineOptions(
-        argc, argv, "Sea-DSA Advanced Memory Graph Analysis Tool");
-  
-    _irm = std::make_unique<IRManager>();
-    _irm->addMainModule(InputFilename);
-    auto &M = _irm->getModule();
+  void init() override {
+    auto &M = _irm.getModule();
   
     // Set up output file if requested
     if (!AsmOutputFilename.empty()) {
@@ -131,28 +124,25 @@ private:
 
     if (!AsmOutputFilename.empty()) _asmOutput->keep();
   }
-  std::string _handle_query_impl(const std::string &req){
-    PAQuery query = parse(req, *_irm);
-    PAResponse response = std::visit([&](const auto &arg) -> PAResponse {
-      using T = std::decay_t<decltype(arg)>;
-      if constexpr (std::is_same_v<T, IRMQuery>)
-        return arg;
-      if constexpr (std::is_same_v<T, IRParseError>)
-        return ErrorOut{arg.message};
-      if constexpr (std::is_same_v<T, AliasIn>) {
-        SimpleAAQueryInfo AAQI;
-        auto mkLoc = [](const llvm::Value *v) {
-            return llvm::MemoryLocation(v, llvm::LocationSize::beforeOrAfterPointer());
-        };
-        auto result = _seadsa->getResult().alias(mkLoc(arg.a), mkLoc(arg.b), AAQI);
-        return AliasOut{ result };
-      }
-      return ErrorOut{"unknown query type or not available"};
-    }, query);
-    return responseToString(response, *_irm);
+  PTAliasResult getAliasResult(Ptr a, Ptr b) override {
+    SimpleAAQueryInfo AAQI;
+    auto mkLoc = [](const llvm::Value *v) {
+        return llvm::MemoryLocation(v, llvm::LocationSize::beforeOrAfterPointer());
+    };
+    auto result = _seadsa->getResult().alias(mkLoc(a), mkLoc(b), AAQI);
+    return result;
   }
 };
 
+SeadsaQueryServer::~SeadsaQueryServer() = default;
+
 int main(int argc, char **argv) {
-  return SeadsaQueryServer().run(argc, argv);
+  EnableDebugBuffering = true;
+  InitLLVM X2(argc, argv);
+  cl::ParseCommandLineOptions(
+      argc, argv, "Sea-DSA Advanced Memory Graph Analysis Tool");
+
+  auto irm = IRManager();
+  irm.addMainModule(InputFilename);
+  return SeadsaQueryServer(irm).run();
 }

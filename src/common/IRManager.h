@@ -1,8 +1,9 @@
 #pragma once
 
 #include "VId.h"
+#include "Common.h"
 
-#include "llvm/Analysis/TargetLibraryInfo.h"
+#include <llvm/Analysis/TargetLibraryInfo.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Value.h>
 #include <llvm/Bitcode/BitcodeWriter.h>
@@ -14,6 +15,7 @@
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/Path.h>
+#include <llvm/ADT/ArrayRef.h>
 
 #include <memory>
 #include <string>
@@ -37,7 +39,6 @@ struct IRStat      { int16_t funcCnt; int16_t globalCnt; int32_t globalPtrCnt; i
 class IRManager {
 private:
   std::string _mainModulePath;
-  std::unique_ptr<llvm::LLVMContext> _ctx;
 
   std::unique_ptr<llvm::Module> _module;
   llvm::Triple _targetTriple;
@@ -48,15 +49,13 @@ private:
 
 	std::unordered_map<std::string, std::pair<std::string, int16_t>> _globalStringToIdxCache;
 	std::unordered_map<std::string, std::vector<std::string>> _manglingCache;
-	std::unordered_map<VId, const llvm::Value *> _vidToValueCache;
-  std::unordered_map<const llvm::Value *, VId> _valueToVidCache;
+	std::unordered_map<VId, llvm::Value *> _vidToValueCache;
+  std::unordered_map<llvm::Value *, VId> _valueToVidCache;
 
 public:
-  explicit IRManager(): _ctx(std::make_unique<llvm::LLVMContext>()) {}
+  explicit IRManager() {}
 
   int16_t addMainModule(const std::string &irPath);
-
-  const llvm::LLVMContext &getLLVMContext() const { return *_ctx; }
   
   // you can use this to modify the module, like instrumenting
   llvm::Module &getModule() { return *_module;  }
@@ -66,28 +65,28 @@ public:
   const IRStat& getIRStat() const { return _irStat; }
 
   /// @note cached, safe for instrumenting
-  VId valueToVId(const llvm::Value *V) const {
+  VId valueToVId(llvm::Value *V) const {
     if (!V) throw std::runtime_error("pass nullptr to valueToVId");
     auto it = _valueToVidCache.find(V);
     return it != _valueToVidCache.end() ? it->second : VID_NOT_REGISTERED;
   }
 
-  const llvm::Value *vidToValue(VId id) const {
+  llvm::Value *vidToValue(VId id) const {
     auto it = _vidToValueCache.find(id);
     return it != _vidToValueCache.end() ? it->second : throw std::runtime_error("vid not found");
   }
 
-  int16_t resolveLocalName(const std::string &name, const llvm::Function *F) const;
+  int16_t resolveLocalName(const std::string &name, llvm::Function *F) const;
 
   /// @param name should not contain `@`
   /// @return VIds for the given global or function name (multiple if overloaded).
   /// @throws std::runtime_error if not found ("name not found").
   std::vector<std::pair<const std::string&, int16_t>> dismangleGlobalOrFunction(const std::string &name) const;
 
-  llvm::raw_ostream &printValueDebugName(llvm::raw_ostream &os, const llvm::Value *V) const;
+  llvm::raw_ostream &printValueDebugName(llvm::raw_ostream &os, llvm::Value *V) const;
   /// @note the id, type of value, the name and the debug info (if not clipped)
   /// @warning this may be costly, don't call it in every query
-  llvm::raw_ostream &printValueDebugInfo(llvm::raw_ostream &os, const llvm::Value *V) const;
+  llvm::raw_ostream &printValueDebugInfo(llvm::raw_ostream &os, llvm::Value *V) const;
 
   /// both .ll and .bc are supported
   void dumpModule(const std::string &outPath) const {

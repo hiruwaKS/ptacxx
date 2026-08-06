@@ -3,9 +3,8 @@
  *   and <lotus>/tools/alias/lotus-alias-aser-aa.cpp
  */
 
-#include "drivers/common/QueryInterface.h"
-#include "drivers/common/Transport.h"
-#include "drivers/common/Postprocess.h"
+#include "common/PAWrapper.h"
+#include "common/QueryInterface.h"
 #include "common/IRManager.h"
 #include "common/Common.h"
 
@@ -129,23 +128,16 @@ std::pair<std::unique_ptr<llvm::ModulePass>, std::unique_ptr<PTAPass>> getPtaPas
   return std::make_pair(std::move(pass), std::move(ptaPass));
 }
 
-class AserPTAQueryServer : public QueryServer<AserPTAQueryServer> {
-  friend class QueryServer<AserPTAQueryServer>;
+class AserPTAQueryServer : public IncluPAWrapper {
 private:
   std::pair<std::unique_ptr<llvm::ModulePass>, std::unique_ptr<PTAPass>> _ptaPass;
   std::unique_ptr<llvm::legacy::PassManager> _passes;
-  std::unique_ptr<IRManager> _irm;
+public:
+  AserPTAQueryServer(IRManager &irm) : IncluPAWrapper(irm) {}
+  ~AserPTAQueryServer() override;
 private:
-  void _init_impl(int argc, char **argv) {
-    InitLLVM X(argc, argv);
-    // Parse command line
-    cl::ParseCommandLineOptions(
-        argc, argv, "AserPTA - High-Performance Pointer Analysis Tool\n");
-  
-    // Load IR module
-    _irm = std::make_unique<IRManager>();
-    _irm->addMainModule(InputFilename);
-    auto &M = _irm->getModule();
+  void init() override {
+    auto &M = _irm.getModule();
   
     errs() << "Loaded module: " << InputFilename << "\n";
     errs() << "Analysis mode: " << AnalysisMode << "\n";
@@ -260,36 +252,29 @@ private:
     // Prepare for query
     _ptaPass.second->getCtx();
   }
-  std::string _handle_query_impl(const std::string &req){
-    PAQuery query = parse(req, *_irm);
-    PAResponse response = std::visit([&](const auto &arg) -> PAResponse {
-      using T = std::decay_t<decltype(arg)>;
-      if constexpr (std::is_same_v<T, IRMQuery>)
-        return arg;
-      if constexpr (std::is_same_v<T, IRParseError>)
-        return ErrorOut{arg.message};
-      if constexpr (std::is_same_v<T, PtsIn>) {
-        std::vector<const llvm::Value *> pts;
-        _ptaPass.second->getPointsTo(arg.ptr, pts);
-        return PtsOut{pts};
-      }
-      if constexpr (std::is_same_v<T, PtIn>) {
-        std::vector<const llvm::Value *> pts1;
-        _ptaPass.second->getPointsTo(arg.ptr, pts1);
-        return PtOut{mayPointTo(pts1, arg.obj) ? ResultMay: ResultNo};
-      }
-      if constexpr (std::is_same_v<T, AliasIn>) {
-        auto may = _ptaPass.second->alias(arg.a, arg.b);
-        return AliasOut{ may ? 
-          llvm::AliasResult::MayAlias : llvm::AliasResult::NoAlias
-        };
-      }
-      return ErrorOut{"unknown query type or not available"};
-    }, query);
-    return responseToString(response, *_irm);
-  } 
+  bool getPointsToSet(Ptr value, PointsToSet &pts) override {
+    std::vector<const llvm::Value *> pts1;
+    _ptaPass.second->getPointsTo(value, pts1);
+    for (auto &site : pts1) pts.push_back(const_cast<llvm::Value *>(site));
+    return true;
+  }
+
+  PTAliasResult getAliasResult(Ptr a, Ptr b) override {
+    auto may = _ptaPass.second->alias(a, b);
+    return may ? 
+      llvm::AliasResult::MayAlias : llvm::AliasResult::NoAlias;
+  }
 };
 
+AserPTAQueryServer::~AserPTAQueryServer() = default;
+
 int main(int argc, char **argv) {
-  return AserPTAQueryServer().run(argc, argv);
+  InitLLVM X(argc, argv);
+  // Parse command line
+  cl::ParseCommandLineOptions(
+      argc, argv, "AserPTA - High-Performance Pointer Analysis Tool\n");
+
+  auto irm = IRManager();
+  irm.addMainModule(InputFilename);
+  return AserPTAQueryServer(irm).run();
 }

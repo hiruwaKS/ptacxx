@@ -1,4 +1,5 @@
 #include "IRManager.h"
+#include "MemoryBuiltins.h"
 #include "LLVMUtils.h"
 
 #include <llvm/IR/BasicBlock.h>
@@ -18,7 +19,7 @@ int16_t IRManager::addMainModule(const std::string &irPath) {
   if (irPath.empty())
     throw std::runtime_error("IRManager: irPath is empty");
   llvm::SMDiagnostic diag;
-  auto M = llvm::parseIRFile(irPath, diag, *_ctx);
+  auto M = llvm::parseIRFile(irPath, diag, getThreadLocalContext());
   if (!M) {
     std::string buf;
     llvm::raw_string_ostream os(buf);
@@ -112,7 +113,7 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
   _metadata.metadata = getLLVMIRMetadataString(M);
 }
 
-int16_t IRManager::resolveLocalName(const std::string &name, const llvm::Function *F) const {
+int16_t IRManager::resolveLocalName(const std::string &name, llvm::Function *F) const {
   std::string buffer;
   llvm::raw_string_ostream os(buffer);
   int16_t idx = 1;
@@ -219,7 +220,7 @@ std::vector<std::pair<const std::string&, int16_t>>
   return results;
 }
 
-llvm::raw_ostream &IRManager::printValueDebugName(llvm::raw_ostream &os, const llvm::Value *V) const {
+llvm::raw_ostream &IRManager::printValueDebugName(llvm::raw_ostream &os, llvm::Value *V) const {
   if (!V) throw std::runtime_error("fatal");
   auto vid = valueToVId(V);
   os << vid.globalIdx << ":" << vid.localIdx << " ";
@@ -255,7 +256,7 @@ llvm::raw_ostream &IRManager::printValueDebugName(llvm::raw_ostream &os, const l
   return os;
 }
 
-llvm::raw_ostream &IRManager::printValueDebugInfo(llvm::raw_ostream &os, const llvm::Value *V) const {
+llvm::raw_ostream &IRManager::printValueDebugInfo(llvm::raw_ostream &os, llvm::Value *V) const {
   if (!V) throw std::runtime_error("fatal");
 
   if (auto *I = llvm::dyn_cast<llvm::Instruction>(V)) {

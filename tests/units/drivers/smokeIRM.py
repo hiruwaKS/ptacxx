@@ -45,7 +45,7 @@ def testInput1(irm_bin, clang_bin, src):
         for k in ["hasMain: 1", "hasGlobalCtor: 0", "hasGlobalDtor: 0", "globalCnt: 0"]:
             assert k in out
         
-        out = _query_irm(irm_bin, bc, "name func2")
+        out = _query_irm(irm_bin, bc, "name @func2")
         print(f"> name func2:\n{out}\n")
         assert "func2" in out
         vid = _vid_from_name(out)
@@ -54,7 +54,7 @@ def testInput1(irm_bin, clang_bin, src):
         print(f"> debug {vid}:\n{out}\n")
         assert "func2" in out and "smokeIRMInput.cpp" in out
         
-        out = _query_irm(irm_bin, bc, "name main")
+        out = _query_irm(irm_bin, bc, "name @main")
         print(f"> name main:\n{out}\n")
         assert "main" in out
         vid = _vid_from_name(out)
@@ -68,7 +68,7 @@ def testInput2(irm_bin, clang_bin, src):
     with tempfile.TemporaryDirectory(prefix="irm_smoke_") as d:
         bc = _compile_to_bc(clang_bin, src, d, True)
         
-        out = _query_irm(irm_bin, bc, "name ptr")
+        out = _query_irm(irm_bin, bc, "name @ptr")
         print(f"> name ptr:\n{out}\n")
         assert "ptr" in out
         vid = _vid_from_name(out)

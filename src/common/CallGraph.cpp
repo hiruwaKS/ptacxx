@@ -107,25 +107,26 @@ CallGraph::EdgesResult CallGraph::getOutEdgesAtCallSite(llvm::CallBase *callsite
   size_t start = it->second.first;
   size_t end = it->second.second;
   assert(end > start);
-  size_t siteStart = start;
+  size_t siteStart = end;
   for (size_t i = start; i < end; ++i) {
     if (_edges[i].callsite == callsite) {
       siteStart = i;
       break;
     }
   }
+  if (siteStart == end) return llvm::ArrayRef<CallEdge>();
   size_t siteEnd = end;
-  for (size_t i = siteStart; i < end; ++i) {
+  for (size_t i = siteStart+1; i < end; ++i) {
     if (_edges[i].callsite != callsite) {
       siteEnd = i;
       break;
     }
   }
-  if (siteStart == end) return llvm::ArrayRef<CallEdge>();
+  if (siteStart == siteEnd) return llvm::ArrayRef<CallEdge>();
   return llvm::ArrayRef<CallEdge>(&_edges[siteStart], siteEnd - siteStart);
 }
 
-inline CallGraph::EdgesResult CallGraph::getCallAnythingEdges() const {
+CallGraph::EdgesResult CallGraph::getCallAnythingEdges() const {
   return llvm::ArrayRef<CallEdge>(_callAnything);
 }
 

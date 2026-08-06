@@ -12,6 +12,6 @@ if (BINARY_DIR_NAME STREQUAL "svf")
 
   target_include_directories(svf-wpa SYSTEM PRIVATE ${SVF_INCLUDE_DIR})
 
-  target_link_libraries(svf-wpa PRIVATE drivers-common)
+  target_link_libraries(svf-wpa PRIVATE common)
   target_link_libraries(svf-wpa PRIVATE SVF::SvfLLVM Threads::Threads)
 endif()

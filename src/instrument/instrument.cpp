@@ -31,15 +31,13 @@ LLVM_CL_IGNORE_WARNINGS_END
 
 int main(int argc, char *argv[]) {
   cl::ParseCommandLineOptions(argc, argv);
-  auto irm = std::make_unique<IRManager>();
-  irm->addMainModule(IRPath);
-  if (!irm->getIRStat().hasMain) throw std::runtime_error("no main function found");
-  auto &M = irm->getModule();
-  auto &TLI = irm->getTLI();
+  auto irm = IRManager();
+  irm.addMainModule(IRPath);
+  if (!irm.getIRStat().hasMain) throw std::runtime_error("no main function found");
+  auto &M = irm.getModule();
   auto &Ctx = M.getContext();
   auto &DL = M.getDataLayout();
-  auto dynMem = 
-    std::make_unique<DynamicMemoryBuiltins>(&M, &TLI);
+  auto dynMem = DynamicMemoryBuiltins(irm);
 
   // 1. record all globals and functions
 
@@ -88,7 +86,7 @@ int main(int argc, char *argv[]) {
 #define CONSTI64(val) ConstantInt::get(I64Ty, static_cast<uint64_t>(static_cast<int64_t>(val)))
 #define VID(vid) CONSTI16((vid).globalIdx), CONSTI16((vid).localIdx)
     auto emitPointerProbe = [&](Value *Val, llvm::BasicBlock::iterator instPos) {
-      auto vid = irm->valueToVId(Val);
+      auto vid = irm.valueToVId(Val);
       auto *ptrToIntInst = new llvm::PtrToIntInst(Val, I64Ty, "", LLVM_INS(instPos));
       CallInst::Create(hookPushFn, {VID(vid), CONSTI16(PTR_ACTION_PROBE), ptrToIntInst, CONSTI64(0)}, "", 
         LLVM_INS(instPos));
@@ -106,7 +104,7 @@ int main(int argc, char *argv[]) {
         }
         if (&BB == &entryBB) {
           // 2.3.1 begin scope
-          auto fvid = irm->valueToVId(F);
+          auto fvid = irm.valueToVId(F);
           CallInst::Create(hookPushFn, {VID(fvid), CONSTI16(PTR_ACTION_BEGINSCOPE), CONSTI64(0), CONSTI64(0)}, 
             "", LLVM_INS(firstPt));
           // 2.3.2 args
@@ -129,7 +127,7 @@ int main(int argc, char *argv[]) {
             if (isa<AllocaInst>(I)) {
               // 2.3.3 alloca case (no probe)
               auto *AI = cast<AllocaInst>(&I);
-              auto allocaid = irm->valueToVId(AI);
+              auto allocaid = irm.valueToVId(AI);
               size_t sizeMultipiler = DL.getTypeStoreSize(AI->getAllocatedType());
               Value* varMultipiler = nullptr;
               if (AI->isArrayAllocation()) {
@@ -145,7 +143,7 @@ int main(int argc, char *argv[]) {
               } else {
                 sizeVal = ConstantInt::get(I64Ty, sizeMultipiler);
               }
-              auto *ptrVal = ensureI64(&Ctx, &I, instPos);
+              auto *ptrVal = ensureI64(&I, instPos);
               CallInst::Create(hookPushFn, {VID(allocaid), CONSTI16(PTR_ACTION_ALLOCA), ptrVal, sizeVal}, 
                 "", LLVM_INS(instPos));
             } else {
@@ -154,14 +152,14 @@ int main(int argc, char *argv[]) {
               if (auto *CB = dyn_cast<CallBase>(&I)) {
                 if (CB->isNoBuiltin() || !CB->getCalledFunction()) continue;
                 // 2.3.5 heap alloca case
-                if (auto size = dynMem->getDynamicAllocationSize(CB)) {
-                  auto cbid = irm->valueToVId(CB);
+                if (auto size = dynMem.getDynamicAllocationSize(CB)) {
+                  auto cbid = irm.valueToVId(CB);
                   CallInst::Create(hookPushFn, {VID(cbid), CONSTI16(PTR_ACTION_HEAP_ALLOCA), 
-                    ensureI64(&Ctx, CB, instPos), size}, "", LLVM_INS(instPos));
-                } else if (auto freedPtr = dynMem->getFreedOperand(CB)) {
-                  auto cbid = irm->valueToVId(CB);
+                    ensureI64(CB, instPos), size}, "", LLVM_INS(instPos));
+                } else if (auto freedPtr = dynMem.getFreedOperand(CB)) {
+                  auto cbid = irm.valueToVId(CB);
                   CallInst::Create(hookPushFn, {VID(cbid), CONSTI16(PTR_ACTION_HEAP_FREE), 
-                    ensureI64(&Ctx, freedPtr, instPos), CONSTI64(0)}, "", LLVM_INS(instPos));
+                    ensureI64(freedPtr, instPos), CONSTI64(0)}, "", LLVM_INS(instPos));
                 }
               }
             }
@@ -169,7 +167,7 @@ int main(int argc, char *argv[]) {
           // 2.3.6 landing pad case
           if (!handledLandingPad &&
               (isa<LandingPadInst>(I) || isa<CatchPadInst>(I) || isa<CleanupPadInst>(I))) {
-            auto fvid = irm->valueToVId(F);
+            auto fvid = irm.valueToVId(F);
             CallInst::Create(hookPushFn, {VID(fvid), CONSTI16(PTR_ACTION_LANDING), CONSTI64(0), CONSTI64(0)}, 
               "", LLVM_INS(firstPt));
             handledLandingPad = true;
@@ -186,7 +184,7 @@ int main(int argc, char *argv[]) {
     auto *entryBB = BasicBlock::Create(Ctx, "", registerGlobalsFn);
     int cnt = 0;
     for (auto *GV : globals) {
-      auto vid = irm->valueToVId(GV);
+      auto vid = irm.valueToVId(GV);
       uint64_t globalSize = 0;
       Type *Ty = GV->getValueType();
       if (Ty->isSized()) globalSize = DL.getTypeAllocSize(Ty);
@@ -236,6 +234,6 @@ int main(int argc, char *argv[]) {
 
   // 3. dump
   if (verifyModule(M, &errs())) errs() << "Module verification failed!\n";
-  irm->dumpModule(OutPath);
+  irm.dumpModule(OutPath);
   return 0;
 }
