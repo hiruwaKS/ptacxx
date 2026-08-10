@@ -67,7 +67,7 @@ int main(int argc, char *argv[]) {
   auto *I64Ty = Type::getInt64Ty(Ctx);
   auto *ISizeTy = Type::getIntNTy(Ctx, sizeof(size_t) * 8);
   auto *hookInitTy = FunctionType::get(VoidTy, {ISizeTy}, false);
-  auto *hookPushTy = FunctionType::get(VoidTy, {I16Ty, I16Ty, I16Ty, I64Ty, I64Ty}, false);
+  auto *hookPushTy = FunctionType::get(VoidTy, {I32Ty, I16Ty, I64Ty, I64Ty}, false);
   auto *hookDumpTy = FunctionType::get(VoidTy, {I8PtrTy}, false);
   auto *registerGlobalsTy = FunctionType::get(I32Ty, {}, false);
 
@@ -83,8 +83,9 @@ int main(int argc, char *argv[]) {
   // 2.3 traverse all functions with definition
   {
 #define CONSTI16(val) ConstantInt::get(I16Ty, static_cast<uint64_t>(static_cast<int64_t>(val)))
+#define CONSTI32(val) ConstantInt::get(I32Ty, static_cast<uint64_t>(static_cast<int64_t>(val)))
 #define CONSTI64(val) ConstantInt::get(I64Ty, static_cast<uint64_t>(static_cast<int64_t>(val)))
-#define VID(vid) CONSTI16((vid).globalIdx), CONSTI16((vid).localIdx)
+#define VID(vid) CONSTI32(vid)
     auto emitPointerProbe = [&](Value *Val, llvm::BasicBlock::iterator instPos) {
       auto vid = irm.valueToVId(Val);
       auto *ptrToIntInst = new llvm::PtrToIntInst(Val, I64Ty, "", LLVM_INS(instPos));

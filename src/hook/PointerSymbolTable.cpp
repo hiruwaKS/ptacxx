@@ -19,7 +19,7 @@ void PtaHook::stopAndConsume(){
       case PTR_ACTION_ALLOCA: {
         auto addr = record.ptr;
         Instance().ptrToVid[addr] = {
-          VId{record.globalIdx, record.localIdx}, record.size};
+          record.vid, record.size};
         Instance().scopeStack.back().second.push_back(addr);
         break;
       }
@@ -27,7 +27,7 @@ void PtaHook::stopAndConsume(){
       case PTR_ACTION_REGION: {
         auto addr = record.ptr;
         Instance().ptrToVid[addr] = {
-          VId{record.globalIdx, record.localIdx}, record.size};
+          record.vid, record.size};
         break;
       }
       case PTR_ACTION_HEAP_FREE: {
@@ -48,15 +48,14 @@ void PtaHook::stopAndConsume(){
           context.resize(contextSize);
           for (size_t j = 0; j < contextSize; ++j)
             context[j] = Instance().scopeStack[j].first;
-          Instance().pts[
-            VId{record.globalIdx, record.localIdx}]
+          Instance().pts[record.vid]
             .insert({vid, std::move(context)});
         }
         break;
       }
       case PTR_ACTION_BEGINSCOPE: {
         Instance().scopeStack.push_back({
-          VId{record.globalIdx, record.localIdx},
+          record.vid,
           std::vector<uint64_t>()
         });
         break;
@@ -68,9 +67,8 @@ void PtaHook::stopAndConsume(){
         break;
       }
       case PTR_ACTION_LANDING: {
-        VId landingVid{record.globalIdx, record.localIdx};
         while (!Instance().scopeStack.empty() &&
-                !(Instance().scopeStack.back().first == landingVid)) {
+                !(Instance().scopeStack.back().first == record.vid)) {
           for (auto addr : Instance().scopeStack.back().second)
             Instance().ptrToVid.erase(addr);
           Instance().scopeStack.pop_back();
@@ -91,8 +89,7 @@ void PtaHook::dump(const char *dumpPath) {
     return;
   }
   auto vidToString = [](VId v) {
-    return std::to_string(v.globalIdx) + ":" +
-           std::to_string(v.localIdx);
+    return std::to_string(v);
   };
   std::vector<VId> keys;
   keys.reserve(Instance().pts.size());

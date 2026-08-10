@@ -36,7 +36,6 @@ private:
   std::unique_ptr<WPAPass> _wpa;
   std::unordered_map<const Value *, NodeID> _valueToNode;
   std::unordered_map<NodeID, const Value *> _nodeToValue;
-  std::unique_ptr<ptacxx::CallGraph> _cg;
 public:
   SVFWPAQueryServer(IRManager &irm) : IncluPAWrapper(irm) {}
   ~SVFWPAQueryServer() override;
@@ -44,7 +43,6 @@ private:
   void init() override {
     auto &M = _irm.getModule();
     LLVMModuleSet::buildSVFModule(M);
-    _cg = std::make_unique<ptacxx::CallGraph>(&M);
     _builder = std::make_unique<SVFIRBuilder>();
     _pag.reset(_builder->build());
     _wpa = std::make_unique<WPAPass>();

@@ -99,14 +99,14 @@ PTAliasResult PAWrapper::getAliasResultCached(Ptr a, Ptr b) {
 }
 
 std::string PAWrapper::handleQueryWrapper(const std::string &req) {
+  PAResponse response;
   try {
     PAQuery query = parse(req, _irm);
-    PAResponse response = std::visit([&](const auto &arg) -> PAResponse {
+    response = std::visit([&](const auto &arg) -> PAResponse {
       using T = std::decay_t<decltype(arg)>;
-      if constexpr (std::is_same_v<T, IRMQuery>)
+      if constexpr (std::is_same_v<T, IRParseMessage> || std::is_same_v<T, IRParseError>
+        || std::is_same_v<T, SyntaxError> || std::is_same_v<T, AnalyzerError>)
         return arg;
-      if constexpr (std::is_same_v<T, IRParseError>)
-        return ErrorOut{ arg.message };
       if constexpr (std::is_same_v<T, PtsIn>) {
         return PtsOut{ getPointsToSetCached(arg.ptr) };
       }
@@ -117,17 +117,17 @@ std::string PAWrapper::handleQueryWrapper(const std::string &req) {
         return AliasOut{ getAliasResultCached(arg.a, arg.b) };
       }
       if constexpr (std::is_same_v<T, ReachableIn>) {
-        _cg->buildCG([this](llvm::CallBase *callInst) {return this->indirectCallResolver(callInst);});
-        return ReachableOut{ _cg->isReachable(arg.from, arg.to) ? ResultMay : ResultNo };
+        _cg.buildCG([this](llvm::CallBase *callInst) {return this->indirectCallResolver(callInst);});
+        return ReachableOut{ std::move(_cg.reach(arg.from, arg.to)) };
       }
       if constexpr (std::is_same_v<T, CallOutEdgesIn>) {
-        _cg->buildCG([this](llvm::CallBase *callInst) {return this->indirectCallResolver(callInst);});
-        return CallOutEdgesOut{ _cg->getOutEdges(arg.f) };
+        _cg.buildCG([this](llvm::CallBase *callInst) {return this->indirectCallResolver(callInst);});
+        return CallOutEdgesOut{ _cg.getOutEdges(arg.f) };
       }
       if constexpr (std::is_same_v<T, CallInEdgesIn>) {
-        _cg->buildCG([this](llvm::CallBase *callInst) {return this->indirectCallResolver(callInst);});
-        _cg->buildReverseCG();
-        return CallInEdgesOut{ _cg->getInEdges(arg.f), _cg->getCallAnythingEdges() };
+        _cg.buildCG([this](llvm::CallBase *callInst) {return this->indirectCallResolver(callInst);});
+        _cg.buildReverseCG();
+        return CallInEdgesOut{ _cg.getInEdges(arg.f), _cg.getCallAnythingEdges() };
       }
       if constexpr (std::is_same_v<T, AllAllocSitesIn>) {
         computeAllocationSites();
@@ -137,12 +137,12 @@ std::string PAWrapper::handleQueryWrapper(const std::string &req) {
         computeAllocationSites();
         return AllocSitesOut{getAllocationSites(arg.f)};
       }
-      return ErrorOut{"unknown query type or not available"};
+      return IRParseError{"unknown query type or not available"};
     }, query);
-    return responseToString(response, _irm);
   } catch (const std::exception &e) {
-    return "error: " + std::string(e.what());
+    response = AnalyzerError{ std::string(e.what()) };
   }
+  return responseToString(response, _irm);
 }
 
 PTAliasResult PAWrapper::aliasByIntersection(PointsToSetView pts1, PointsToSetView pts2) {

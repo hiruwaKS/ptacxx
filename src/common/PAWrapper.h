@@ -24,9 +24,9 @@ private:
   llvm::DenseMap<Ptr, std::optional<PointsToSet>> _ptsCache;
   llvm::DenseMap<AliasPair, PTAliasResult> _aliasCache;
 
-  std::unique_ptr<ptacxx::CallGraph> _cg;
+  ptacxx::CallGraph _cg;
 public:
-  PAWrapper(IRManager &irm) : _irm(irm) {}
+  PAWrapper(IRManager &irm) : _irm(irm), _cg(irm) {}
   virtual ~PAWrapper();
 
   int run();

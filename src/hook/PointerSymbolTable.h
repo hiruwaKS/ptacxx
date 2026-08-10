@@ -9,8 +9,7 @@
 #include <vector>
 
 struct PtrRecord {
-  int16_t globalIdx;
-  int16_t localIdx;
+  VId vid;
   int16_t action;
   int16_t padding;
   uint64_t ptr;

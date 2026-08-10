@@ -29,12 +29,24 @@
  * Add bitcode sources -> get metadatas -> conversion to vid
  */
 
-/// Contains: Module::ModuleID, Module::SourceFileName, Module::TargetTriple
-///   Module::DataLayout
-/// !llvm.ident, !clang.version, !optlevel, !commandline, !llvm.module.deps
-struct IRMetadata    { std::string metadata; };
+struct IRStat {
+  std::string moduleID; std::string sourceFileName; std::string targetTriple;
+  std::string dataLayout;
+  std::string llvmIdent; std::string clangVersion; std::string optlevel; std::string commandline; std::string llvmModuleDeps;
+  int funcCnt; int globalCnt; int localCnt;
+  int globalPtrCnt; int argPtrCnt; int instPtrCnt; 
+  bool hasMain; bool hasGlobalCtor; bool hasGlobalDtor;
+};
 
-struct IRStat      { int16_t funcCnt; int16_t globalCnt; int32_t globalPtrCnt; int32_t argPtrCnt; int32_t instPtrCnt; bool hasMain; bool hasGlobalCtor; bool hasGlobalDtor; };
+struct GlobalEntry {
+  /// mangled or demangled name
+  std::string name;
+  VId id;
+  bool operator<(const GlobalEntry &rhs) const {
+    if (name != rhs.name) return name < rhs.name;
+    return id < rhs.id;
+  }
+};
 
 class IRManager {
 private:
@@ -44,24 +56,23 @@ private:
   llvm::Triple _targetTriple;
   std::unique_ptr<llvm::TargetLibraryInfoImpl> _TLII;
   std::unique_ptr<llvm::TargetLibraryInfo> _TLI;
-  IRMetadata _metadata;
   IRStat _irStat;
 
-	std::unordered_map<std::string, std::pair<std::string, int16_t>> _globalStringToIdxCache;
-	std::unordered_map<std::string, std::vector<std::string>> _manglingCache;
+  template <typename T>
+  using SortedVector = std::vector<T>;
+	SortedVector<GlobalEntry> _globalStringToIdxCache;
 	std::unordered_map<VId, llvm::Value *> _vidToValueCache;
   std::unordered_map<llvm::Value *, VId> _valueToVidCache;
 
 public:
   explicit IRManager() {}
 
-  int16_t addMainModule(const std::string &irPath);
+  void addMainModule(const std::string &irPath);
   
   // you can use this to modify the module, like instrumenting
   llvm::Module &getModule() { return *_module;  }
   const llvm::Module &getModule() const { return *_module; }
   const llvm::TargetLibraryInfo& getTLI() const { return *_TLI; }
-  const IRMetadata& getMetadata() const { return _metadata; }
   const IRStat& getIRStat() const { return _irStat; }
 
   /// @note cached, safe for instrumenting
@@ -76,17 +87,14 @@ public:
     return it != _vidToValueCache.end() ? it->second : throw std::runtime_error("vid not found");
   }
 
-  int16_t resolveLocalName(const std::string &name, llvm::Function *F) const;
+  llvm::ArrayRef<GlobalEntry> listGlobal(const std::string &prefix) const;
 
-  /// @param name should not contain `@`
-  /// @return VIds for the given global or function name (multiple if overloaded).
-  /// @throws std::runtime_error if not found ("name not found").
-  std::vector<std::pair<const std::string&, int16_t>> dismangleGlobalOrFunction(const std::string &name) const;
+  /// @note if debugInfo is printed, the result will be multi-line
+  /// @warning debugInfo may be costly, don't call it in every query
+  llvm::raw_ostream &printValue(llvm::raw_ostream &os, llvm::Value *V, 
+    bool demangle = true, bool type = true, bool debugInfo = false) const;
 
-  llvm::raw_ostream &printValueDebugName(llvm::raw_ostream &os, llvm::Value *V) const;
-  /// @note the id, type of value, the name and the debug info (if not clipped)
-  /// @warning this may be costly, don't call it in every query
-  llvm::raw_ostream &printValueDebugInfo(llvm::raw_ostream &os, llvm::Value *V) const;
+  llvm::raw_ostream &printStat(llvm::raw_ostream &os) const;
 
   /// both .ll and .bc are supported
   void dumpModule(const std::string &outPath) const {
@@ -108,5 +116,4 @@ public:
 private:
   void traverseModule(std::unique_ptr<llvm::Module> pM);
   static const llvm::Function *parentFunction(const llvm::Value *V);
-  std::string getLLVMIRMetadataString(const llvm::Module &M) const;
 };

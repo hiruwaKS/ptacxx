@@ -6,14 +6,14 @@
 #include <llvm/IR/Instructions.h>
 #include <llvm/Support/Casting.h>
 #include <stdexcept>
-#include <unordered_set>
+
 
 using namespace llvm;
 using namespace ptacxx;
 
 void CallGraph::buildCG(IndirectResolver indirectResolver) {
   if (_cgBuilt) return;
-  for (Function &F : *_M) {
+  for (Function &F : _irm.getModule()) {
     if (llvmSkip(&F)) continue;
     if (F.isDeclaration()) continue;
     size_t startIdx = _edges.size();
@@ -59,33 +59,45 @@ void CallGraph::buildReverseCG() {
   _revBuilt = true;
 }
 
-bool CallGraph::isReachable(llvm::Function *from, llvm::Function *to) const {
-  assert(_cgBuilt);
-  assert(from && to);
-  std::unordered_set<llvm::Function*> visited;
-  std::vector<llvm::Function*> stack;
-  stack.push_back(from);
-  visited.insert(from);
-  while (!stack.empty()) {
-    llvm::Function *current = stack.back();
-    stack.pop_back();
-    auto it = _CG.find(current);
-    if (it == _CG.end()) continue;
-    size_t start = it->second.first;
-    size_t end = it->second.second;
-    for (size_t i = start; i < end; ++i) {
-      const CallEdge &edge = _edges[i];
-      if (edge.type == CallEdge::CALLANYTHING) return true;
-      llvm::Function *callee = edge.callee;
-      assert(callee);
-      if (callee == to) return true;
-      if (visited.find(callee) == visited.end()) {
-        visited.insert(callee);
-        stack.push_back(callee);
-      }
+bool CallGraph::reachIter(llvm::Function *from, llvm::Function *to, 
+    std::vector<size_t> &path, std::unordered_set<llvm::Function *> &visited) const {
+  auto it = _CG.find(from);
+  if (it == _CG.end()) return false;
+  size_t start = it->second.first;
+  size_t end = it->second.second;
+  for (size_t i = start; i < end; ++i) {
+    const CallEdge &edge = _edges[i];
+    if (edge.type == CallEdge::CALLANYTHING) {
+      path.push_back(i);
+      return true;
+    }
+    llvm::Function *callee = edge.callee;
+    assert(callee);
+    if (callee == to) {
+      path.push_back(i);
+      return true;
+    }
+    if (visited.find(callee) == visited.end()) {
+      visited.insert(callee);
+      path.push_back(i);
+      if (reachIter(callee, to, path, visited)) return true;
+      path.pop_back();
     }
   }
   return false;
+}
+
+std::vector<CallEdge> CallGraph::reach(llvm::Function *from, llvm::Function *to) const {
+  assert(_cgBuilt);
+  assert(from && to);
+  std::unordered_set<llvm::Function*> visited;
+  std::vector<size_t> path;
+  if (reachIter(from, to, path, visited)) {
+    std::vector<CallEdge> result;
+    for (size_t i : path) result.push_back(_edges[i]);
+    return result;
+  }
+  return {};
 }
 
 CallGraph::EdgesResult CallGraph::getOutEdges(llvm::Function *from) const {

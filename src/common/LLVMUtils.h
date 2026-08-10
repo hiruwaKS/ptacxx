@@ -7,6 +7,7 @@
 #include <llvm/IR/Module.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/Config/llvm-config.h>
+#include <llvm/Demangle/Demangle.h>
 
 llvm::LLVMContext &getThreadLocalContext();
 
@@ -79,3 +80,5 @@ static inline llvm::raw_ostream& printDetailedValueId(llvm::raw_ostream &os,
 #endif
 
 llvm::Value* ensureI64(llvm::Value *V, llvm::BasicBlock::iterator instPos);
+
+std::string getDemangledName(const std::string &mangled);
