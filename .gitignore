@@ -78,3 +78,6 @@ __pycache__/
 # configs are copied from lotus
 config/ptr.spec 
 config/modref.spec
+
+# SVF dump
+*.dot

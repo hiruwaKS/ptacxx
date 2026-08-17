@@ -24,7 +24,23 @@ struct CallEdge {
   CallEdgeType type;
   llvm::Function *caller;
   llvm::CallBase *callsite;
-  llvm::Function *callee; // if CALLANYTHING, callee is ignored
+  llvm::Function *callee; // if CALLANYTHING, callee should be nullptr
+};
+
+struct CallEdgeIgnoreCS {
+  llvm::Function *caller;
+  llvm::Function *callee;
+  bool operator==(const CallEdgeIgnoreCS& other) const {
+    return caller == other.caller && callee == other.callee;
+  }
+};
+
+struct CallEdgeIgnoreCSHash {
+  std::size_t operator()(const CallEdgeIgnoreCS& edge) const {
+    auto h1 = std::hash<llvm::Function*>{}(edge.caller);
+    auto h2 = std::hash<llvm::Function*>{}(edge.callee);
+    return h1 ^ (h2 << 1);
+  }
 };
 
 class CallGraph {
@@ -50,14 +66,14 @@ public:
   /// @brief reverse call graph will not be built until buildReverseCG is called
   void buildReverseCG();
   
-  std::vector<CallEdge> reach(llvm::Function *from, llvm::Function *to) const;
+  std::vector<CallEdge> reach(llvm::Function *from, llvm::Function *to, bool ignoreUnknown = false) const;
   EdgesResult getOutEdges(llvm::Function *from) const;
   EdgesResult getOutEdgesAtCallSite(llvm::CallBase *from) const;
   EdgesResult getCallAnythingEdges() const;
   /// @note getInEdges + getCallAnythingEdges = all in edges
   EdgesResult getInEdges(llvm::Function *to) const;
 private:
-  bool reachIter(llvm::Function *from, llvm::Function *to, 
+  bool reachIter(llvm::Function *from, llvm::Function *to, bool ignoreUnknown, 
     std::vector<size_t> &path, std::unordered_set<llvm::Function *> &visited) const;
 };
 }

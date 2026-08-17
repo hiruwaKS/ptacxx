@@ -16,6 +16,7 @@
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/Path.h>
 #include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/DenseMap.h>
 
 #include <memory>
 #include <string>
@@ -23,11 +24,6 @@
 #include <cstdint>
 #include <stdexcept>
 #include <vector>
-
-/**
- * Manage multiple modules.
- * Add bitcode sources -> get metadatas -> conversion to vid
- */
 
 struct IRStat {
   std::string moduleID; std::string sourceFileName; std::string targetTriple;
@@ -61,10 +57,15 @@ private:
   template <typename T>
   using SortedVector = std::vector<T>;
 	SortedVector<GlobalEntry> _globalStringToIdxCache;
-	std::unordered_map<VId, llvm::Value *> _vidToValueCache;
-  std::unordered_map<llvm::Value *, VId> _valueToVidCache;
+	llvm::DenseMap<VId, llvm::Value *> _vidToValueCache;
+  llvm::DenseMap<llvm::Value *, VId> _valueToVidCache;
 
 public:
+  enum PrintLevel {
+    PRT_VID = 0,
+    PRT_DETAILED = 1,
+    PRT_DEBUG = 2
+  };
   explicit IRManager() {}
 
   void addMainModule(const std::string &irPath);
@@ -91,8 +92,7 @@ public:
 
   /// @note if debugInfo is printed, the result will be multi-line
   /// @warning debugInfo may be costly, don't call it in every query
-  llvm::raw_ostream &printValue(llvm::raw_ostream &os, llvm::Value *V, 
-    bool demangle = true, bool type = true, bool debugInfo = false) const;
+  llvm::raw_ostream &printValue(llvm::raw_ostream &os, llvm::Value *V, PrintLevel pl) const;
 
   llvm::raw_ostream &printStat(llvm::raw_ostream &os) const;
 

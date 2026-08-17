@@ -14,10 +14,17 @@
 #include <llvm/Support/SourceMgr.h>
 #include <llvm/Config/llvm-config.h>
 
+#include <fstream>
+
+/// print lines from a file, [start, end]
+llvm::raw_ostream &printLinesFromFile(llvm::raw_ostream &os, const std::string &path, unsigned start, unsigned end);
+
 void IRManager::addMainModule(const std::string &irPath) {
   if (irPath.empty())
     throw std::runtime_error("IRManager: irPath is empty");
   llvm::SMDiagnostic diag;
+  {
+  ScopeTimer _("Load");
   auto M = llvm::parseIRFile(irPath, diag, getThreadLocalContext());
   if (!M) {
     std::string buf;
@@ -29,6 +36,7 @@ void IRManager::addMainModule(const std::string &irPath) {
   }
 
   traverseModule(std::move(M));
+  }
 
   if (!_irStat.hasMain)
     llvm::errs() << "IRManager: main module without main function\n";
@@ -50,17 +58,19 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
   VId vidCnt = 0;
 
   for (auto &GV : M.globals()) {
-    if (GV.isDeclaration()) continue;
-    if (llvmSkip(&GV)) continue;
-    
     _vidToValueCache[vidCnt] = &GV;
     _valueToVidCache[&GV] = vidCnt;
     auto mangledName = GV.getName().str();
     _globalStringToIdxCache.push_back( {mangledName, vidCnt} );
     {
-      auto demangled = llvm::demangle(mangledName);
-      if (demangled != mangledName) 
-        _globalStringToIdxCache.push_back( {demangled, vidCnt} );
+      auto demangled = getDemangledName(mangledName);
+      while (true) {
+        if (demangled != mangledName) 
+          _globalStringToIdxCache.push_back( {demangled, vidCnt} );
+        auto [ns, remain] = getNamespacePair(demangled);
+        if (ns == "") break;
+        demangled = remain;
+      }
     }
     ++vidCnt;
     if (GV.getValueType()->isPointerTy())
@@ -71,8 +81,6 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
   _irStat.globalCnt = globalCnt;
 
   for (auto &F : M) {
-    if (F.isDeclaration()) continue;
-    if (llvmSkip(&F)) continue;
     ++funcCnt;
 
     _vidToValueCache[vidCnt] = &F;
@@ -81,8 +89,13 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
     _globalStringToIdxCache.push_back( {mangledName, vidCnt} );
     {
       auto demangled = getDemangledName(mangledName);
-      if (demangled != mangledName)
-        _globalStringToIdxCache.push_back( {demangled, vidCnt} );
+      while (true) {
+        if (demangled != mangledName) 
+          _globalStringToIdxCache.push_back( {demangled, vidCnt} );
+        auto [ns, remain] = getNamespacePair(demangled);
+        if (ns == "") break;
+        demangled = remain;
+      }
     }
     ++vidCnt;
 
@@ -95,6 +108,9 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
       ++localIdx;
     }
     for (auto &BB : F) {
+      _vidToValueCache[vidCnt] = &BB;
+      _valueToVidCache[&BB] = vidCnt;
+      ++vidCnt;
       for (auto &I : BB) {
         // note: number void instrument, to see where pointers are used (store)
         // if (I.getType()->isVoidTy())
@@ -170,43 +186,88 @@ llvm::ArrayRef<GlobalEntry> IRManager::listGlobal(const std::string &prefix) con
   return llvm::ArrayRef<GlobalEntry>(&*begin, static_cast<size_t>(std::distance(begin, end)));
 }
 
-llvm::raw_ostream &IRManager::printValue(llvm::raw_ostream &os, llvm::Value *V, 
-    bool demangle, bool type, bool debugInfo) const {
+llvm::raw_ostream &printLinesFromFile(llvm::raw_ostream &os, const std::string &path, 
+    unsigned start, unsigned end){
+  std::ifstream file(path);
+  std::string line;
+  unsigned lineNum = 1;
+  while (lineNum < start && std::getline(file, line)) ++lineNum;
+  while (lineNum <= end && std::getline(file, line)) {
+    os << line << "\n";
+    ++lineNum;
+  }
+  return os;
+}
+
+llvm::raw_ostream &IRManager::printValue(llvm::raw_ostream &os, llvm::Value *V, PrintLevel pl) const {
   if (!V) throw std::runtime_error("fatal");
   auto vid = valueToVId(V);
   os << vid;
-  os << " ";
-  printDetailedValueId(os, V);
-  os << " ";
-  if (auto *Arg = llvm::dyn_cast<llvm::Argument>(V)) {
-    Arg->getParent()->printAsOperand(os, false);
-    os << ":";
-    Arg->printAsOperand(os, false);
-  }
-  else if (auto *I = llvm::dyn_cast<llvm::Instruction>(V)) {
-    I->getParent()->getParent()->printAsOperand(os, false); 
-    os << ":";
-    if (V->getType()->isVoidTy()) {
-      auto *BB = I->getParent();
-      BB->printAsOperand(os, false);
-      unsigned idx = 0;
-      for (auto &Inst : *BB) {
-        if (&Inst == I) break;
-        idx++;
+  if (pl == PrintLevel::PRT_VID) return os;
+  if (true) {
+    if (pl == PrintLevel::PRT_DEBUG) {
+      os << " ";
+      printDetailedValueId(os, V);
+    }
+    os << " ";
+    if (auto *Arg = llvm::dyn_cast<llvm::Argument>(V)) {
+      auto F = Arg->getParent();
+      os << getDemangledName(F->getName().str());
+      if (pl == PrintLevel::PRT_DEBUG) {
+        os << " ";
+        F->printAsOperand(os, false);
+        os << ":";
+        Arg->printAsOperand(os, false);
       }
-      os << ":BBIdx" << idx;
-    } else V->printAsOperand(os, false);
+    }
+    else if (auto *B = llvm::dyn_cast<llvm::BasicBlock>(V)) {
+      auto F = B->getParent();
+      os << "block of " << getDemangledName(F->getName().str());
+      if (pl == PrintLevel::PRT_DEBUG) {
+        os << " ";
+        F->printAsOperand(os, false);
+        os << ":";
+        B->printAsOperand(os, false);
+      }
+    }
+    else if (auto *I = llvm::dyn_cast<llvm::Instruction>(V)) {
+      auto F = I->getParent()->getParent();
+      os << "inst of " << getDemangledName(F->getName().str());
+      if (pl == PrintLevel::PRT_DEBUG) {
+        os << " ";
+        F->printAsOperand(os, false);
+        os << ":";
+        if (I->getType()->isVoidTy()) {
+          auto *BB = I->getParent();
+          // BB->printAsOperand(os, false);
+          unsigned idx = 0;
+          for (auto &Inst : *BB) {
+            if (&Inst == I) break;
+            idx++;
+          }
+          (void)idx;
+          os << ":BBIdx" << idx << ":";
+        }
+        I->print(os, false); 
+      }
+    }
+    else if (auto *F = llvm::dyn_cast<llvm::Function>(V)) {
+      os << getDemangledName(F->getName().str());
+      if (pl == PrintLevel::PRT_DEBUG) {
+        os << " ";
+        F->printAsOperand(os, false);
+      }
+    }
+    else if (auto *GV = llvm::dyn_cast<llvm::GlobalVariable>(V)) {
+      os << getDemangledName(GV->getName().str());
+      if (pl == PrintLevel::PRT_DEBUG) {
+        os << " ";
+        GV->printAsOperand(os, false);
+      }
+    }
+    else V->printAsOperand(os, false);
   }
-  else if (auto *F = llvm::dyn_cast<llvm::Function>(V)) {
-    if (demangle) os << getDemangledName(F->getName().str()) << " ";
-    F->printAsOperand(os, false);
-  }
-  else if (auto *GV = llvm::dyn_cast<llvm::GlobalVariable>(V)) {
-    if (demangle) os << getDemangledName(GV->getName().str()) << " ";
-    GV->printAsOperand(os, false);
-  }
-  else V->printAsOperand(os, false);
-  if (type) {
+  if (pl == PrintLevel::PRT_DEBUG) {
     os << " " << *V->getType();
 #if LLVM_VERSION_MAJOR == 14
   // check opaque pointer
@@ -215,54 +276,52 @@ llvm::raw_ostream &IRManager::printValue(llvm::raw_ostream &os, llvm::Value *V,
   }
 #endif
   }
-  if (debugInfo) {
+  if (pl == PrintLevel::PRT_DEBUG) {
     os << "\n";
+    if (!V->use_empty()) {
+      if (V->getNumUses() > 10) { os << "[Used in too many places]\n"; }
+      else for (auto &U : V->uses()) {
+        os << "  [Use] at operand " << U.getOperandNo() << "\n";
+        if (auto *User = dyn_cast<llvm::Instruction>(U.getUser()))
+          printValue(os << "  ", User, PrintLevel::PRT_DETAILED) << "\n";
+      }
+    }
+    unsigned lineStart = 1, lineEnd = 0, colStart = 1, colEnd = 0;
+    std::string path = "";
     if (auto *I = llvm::dyn_cast<llvm::Instruction>(V)) {
       if (auto DL = I->getDebugLoc()) {
         unsigned Line = DL.getLine();
         unsigned Col = DL.getCol();
-        if (Line != 0 && Col != 0) os << "LINE " << Line << ":" << Col << "\n";
+        lineStart = lineEnd = Line;
+        colStart = colEnd = Col;
         if (auto *Scope = DL.getScope()) {
-          llvm::StringRef Filename = "";
-          llvm::StringRef Directory = "";
-          llvm::StringRef FuncName = "";
           if (auto *DIL = dyn_cast<llvm::DILocation>(Scope)) {
             if (auto *File = DIL->getFile()) {
-              Filename = File->getFilename();
-              Directory = File->getDirectory();
+              path = (File->getDirectory() + "/" + File->getFilename()).str();
             }
-            else if (auto *SP = DIL->getScope()->getSubprogram())
-              FuncName = SP->getName();
           } else if (auto *DIS = dyn_cast<llvm::DIScope>(Scope)) {
             if (auto *File = DIS->getFile()) {
-              Filename = File->getFilename();
-              Directory = File->getDirectory();
+              path = (File->getDirectory() + "/" + File->getFilename()).str();
             }
-            else if (auto *SP = DIL->getScope()->getSubprogram())
-              FuncName = SP->getName();
           }
-          if (!Filename.empty()&&!Directory.empty()) os << Directory << "/" << Filename << "\n";
-          if (!FuncName.empty()) os << FuncName << "\n";
-        }
-      }
-      if (!I->use_empty()) {
-        if (I->getNumUses() > 10) { os << "[Used in too many places]\n"; }
-        else for (auto &U : I->uses()) {
-          os << "  [Use] at operand " << U.getOperandNo() << "\n";
-          if (auto *User = dyn_cast<llvm::Instruction>(U.getUser()))
-            printValue(os << "  ", User) << "\n";
         }
       }
     }
     else if (auto *F = llvm::dyn_cast<llvm::Function>(V)) {
       if (auto *SP = F->getSubprogram()) {
         os << "Defined: " << (SP->isDefinition() ? "true" : "false") << "\n";
-        if (SP->getLine() && SP->getScopeLine()) os << "LINE " << SP->getLine() << ":" << SP->getScopeLine() << "\n";
-        if (auto *File = SP->getFile()) {
-          llvm::StringRef Filename = File->getFilename(); 
-          llvm::StringRef Directory = File->getDirectory();
-          if (!Filename.empty()&&!Directory.empty()) os << Directory << "/" << Filename << "\n";
+        lineStart = SP->getLine();
+        lineEnd = lineStart;
+        for (auto &BB : *F) {
+          for (auto &Inst : BB) {
+            if (auto DL = Inst.getDebugLoc()) {
+              unsigned instLine = DL.getLine();
+              if (instLine > lineEnd) lineEnd = instLine;
+            }
+          }
         }
+        if (auto *File = SP->getFile())
+          path = (File->getDirectory() + "/" + File->getFilename()).str();
       }
     }
     else if (auto *Arg = llvm::dyn_cast<llvm::Argument>(V)) {
@@ -273,15 +332,20 @@ llvm::raw_ostream &IRManager::printValue(llvm::raw_ostream &os, llvm::Value *V,
       GV->getDebugInfo(GVs);
       for (auto *GVExpr : GVs) {
         if (auto *DIGV = GVExpr->getVariable()) {
-          if (DIGV->getLine()) os << "LINE " << DIGV->getLine() << "\n";
-          if (auto *File = DIGV->getFile()) {
-          llvm::StringRef Filename = File->getFilename(); 
-          llvm::StringRef Directory = File->getDirectory();
-            if (!Filename.empty()&&!Directory.empty()) os << Directory << "/" << Filename << "\n";
-          }
+          unsigned line = DIGV->getLine();
+          lineStart = lineEnd = line;
+          if (auto *File = DIGV->getFile())
+            path = (File->getDirectory() + "/" + File->getFilename()).str();
           if (!DIGV->getLinkageName().empty()) os << DIGV->getLinkageName() << "\n";
         }
       }
+    }
+    if (!path.empty() && lineEnd >= lineStart) {
+      os << "<src LINE " <<  lineStart << ":" << lineEnd;
+      if (colEnd >= colStart) os << " COL" << colStart << ":" << colEnd;
+      os << " in " << path << ">\n";
+      printLinesFromFile(os, path, lineStart, lineEnd);
+      os << "</src>\n";
     }
   }
   return os;
@@ -299,6 +363,7 @@ llvm::raw_ostream &IRManager::printStat(llvm::raw_ostream &os) const {
      << "llvmModuleDeps: " << _irStat.llvmModuleDeps << "\n"
      << "funcCnt: " << _irStat.funcCnt << "\n"
      << "globalCnt: " << _irStat.globalCnt << "\n"
+     << "localCnt: " << _irStat.localCnt << "\n"
      << "globalPtrCnt: " << _irStat.globalPtrCnt << "\n"
      << "argPtrCnt: " << _irStat.argPtrCnt << "\n"
      << "instPtrCnt: " << _irStat.instPtrCnt << "\n"

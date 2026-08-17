@@ -8,8 +8,7 @@ add_smoke_test_target(hook
 
 target_include_directories(hook PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
-target_link_libraries(hook PRIVATE common)
-
 target_link_options(hook PRIVATE -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/export.map)
 
+set_target_properties(hook PROPERTIES POSITION_INDEPENDENT_CODE TRUE)
 set_target_properties(hook PROPERTIES LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/export.map)

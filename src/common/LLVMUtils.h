@@ -9,6 +9,8 @@
 #include <llvm/Config/llvm-config.h>
 #include <llvm/Demangle/Demangle.h>
 
+#include <utility>
+
 llvm::LLVMContext &getThreadLocalContext();
 
 /// @brief this will not skip all declarations, only the ones that start with "llvm."
@@ -42,30 +44,30 @@ static inline llvm::raw_ostream& printDetailedValueId(llvm::raw_ostream &os,
     const llvm::Value *V) {
   switch (V->getValueID()) {
     case llvm::Value::ArgumentVal:
-      os << "Argument";
+      os << "Arg";
       break;
     case llvm::Value::BasicBlockVal:
-      os << "BasicBlock";
+      os << "Block";
       break;
     case llvm::Value::FunctionVal:
-      os << "Function";
+      os << "Func";
       break;
     case llvm::Value::GlobalVariableVal:
-      os << "GlobalVariable";
+      os << "GlobalVar";
       break;
     case llvm::Value::ConstantIntVal:
-      os << "ConstantInt";
+      os << "ConstInt";
       break;
     case llvm::Value::ConstantFPVal:
-      os << "ConstantFP";
+      os << "ConstFP";
       break;
     case llvm::Value::ConstantExprVal:
-      os << "ConstantExpr";
+      os << "ConstExpr";
       break;
     default:
       if (V->getValueID() >= llvm::Value::InstructionVal) {
         if (auto *I = llvm::dyn_cast<llvm::Instruction>(V))
-          os << "Instruction:" << I->getOpcodeName();
+          os << "Inst";
         else os << "UnknownInst";
       } else os << "Unknown";
       break;
@@ -82,3 +84,8 @@ static inline llvm::raw_ostream& printDetailedValueId(llvm::raw_ostream &os,
 llvm::Value* ensureI64(llvm::Value *V, llvm::BasicBlock::iterator instPos);
 
 std::string getDemangledName(const std::string &mangled);
+
+/// split the name to namespace and the remain, right-assoc (A::B::C -> (A,B::C))
+std::pair<std::string, std::string> getNamespacePair(const std::string &demangled);
+
+bool shouldSilence(const std::string& mangledName, bool std, bool llvm, bool runtime);

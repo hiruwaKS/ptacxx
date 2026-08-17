@@ -212,10 +212,13 @@ private:
       }
   
       LOG_INFO("Writing CFG dot files to: {}", CFGDotOutDir);
-      for (const tpa::CFG &cfg : ssProg) {
+      for (auto It = ssProg.begin(), End = ssProg.end();;) {
+        if (It == End) break;
+        const tpa::CFG &cfg = *It;
         const auto &F = cfg.getFunction();
         std::string outPath = CFGDotOutDir + "/" + F.getName().str() + ".dot";
         util::io::writeDotFile(outPath.c_str(), cfg);
+        ++It;
       }
     }
   
@@ -294,16 +297,16 @@ private:
       switch (alloc.getAllocType()) {
       case tpa::AllocSiteTag::Global:
         if (const auto *val = alloc.getGlobalValue())
-          pts.push_back(val);
+          pts.push_back(const_cast<llvm::GlobalVariable *>(val));
         break;
       case tpa::AllocSiteTag::Function:
         if (const auto *val = alloc.getFunction())
-          pts.push_back(val);
+          pts.push_back(const_cast<llvm::Function *>(val));
         break;
       case tpa::AllocSiteTag::Stack:
       case tpa::AllocSiteTag::Heap:
         if (const auto *val = alloc.getLocalValue())
-          pts.push_back(val);
+          pts.push_back(const_cast<llvm::Value *>(val));
         break;
       case tpa::AllocSiteTag::Null:
       case tpa::AllocSiteTag::Universal:

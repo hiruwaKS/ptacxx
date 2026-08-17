@@ -5,8 +5,8 @@
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/Support/Casting.h>
-#include <stdexcept>
 
+#include <stdexcept>
 
 using namespace llvm;
 using namespace ptacxx;
@@ -59,7 +59,7 @@ void CallGraph::buildReverseCG() {
   _revBuilt = true;
 }
 
-bool CallGraph::reachIter(llvm::Function *from, llvm::Function *to, 
+bool CallGraph::reachIter(llvm::Function *from, llvm::Function *to, bool ignoreUnknown, 
     std::vector<size_t> &path, std::unordered_set<llvm::Function *> &visited) const {
   auto it = _CG.find(from);
   if (it == _CG.end()) return false;
@@ -67,6 +67,7 @@ bool CallGraph::reachIter(llvm::Function *from, llvm::Function *to,
   size_t end = it->second.second;
   for (size_t i = start; i < end; ++i) {
     const CallEdge &edge = _edges[i];
+    if (ignoreUnknown && edge.type == CallEdge::CALLANYTHING) continue;
     if (edge.type == CallEdge::CALLANYTHING) {
       path.push_back(i);
       return true;
@@ -80,19 +81,19 @@ bool CallGraph::reachIter(llvm::Function *from, llvm::Function *to,
     if (visited.find(callee) == visited.end()) {
       visited.insert(callee);
       path.push_back(i);
-      if (reachIter(callee, to, path, visited)) return true;
+      if (reachIter(callee, to, ignoreUnknown, path, visited)) return true;
       path.pop_back();
     }
   }
   return false;
 }
 
-std::vector<CallEdge> CallGraph::reach(llvm::Function *from, llvm::Function *to) const {
+std::vector<CallEdge> CallGraph::reach(llvm::Function *from, llvm::Function *to, bool ignoreUnknown) const {
   assert(_cgBuilt);
   assert(from && to);
   std::unordered_set<llvm::Function*> visited;
   std::vector<size_t> path;
-  if (reachIter(from, to, path, visited)) {
+  if (reachIter(from, to, ignoreUnknown, path, visited)) {
     std::vector<CallEdge> result;
     for (size_t i : path) result.push_back(_edges[i]);
     return result;

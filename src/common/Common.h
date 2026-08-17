@@ -19,3 +19,27 @@ static constexpr int16_t PTR_ACTION_PROBE       = 8;
 static constexpr int16_t PTR_ACTION_BEGINSCOPE  = 16;
 static constexpr int16_t PTR_ACTION_ENDSCOPE    = 17;
 static constexpr int16_t PTR_ACTION_LANDING     = 18;
+
+#include <ctime>
+#include <iostream>
+
+class ScopeTimer {
+private:
+  timespec start;
+  const char* name;
+  std::ostream& os;
+public:
+  explicit ScopeTimer(const char* n = "Elapsed", std::ostream& out = std::cout) 
+      : name(n), os(out) {
+    timespec_get(&start, TIME_UTC);
+  }
+  ~ScopeTimer() {
+    timespec now;
+    timespec_get(&now, TIME_UTC);
+    intmax_t us =
+        (now.tv_sec - start.tv_sec) * 1000000 +
+        (now.tv_nsec - start.tv_nsec) / 1000;
+    os << name << ": " 
+      << us << " μs" << std::endl;
+  }
+};

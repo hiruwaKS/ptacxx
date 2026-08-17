@@ -15,18 +15,19 @@ add_compile_options(
 get_filename_component(BINARY_DIR_NAME ${CMAKE_BINARY_DIR} NAME)
 message(STATUS "BINARY_DIR_NAME: ${BINARY_DIR_NAME}")
 
+if (NOT EXISTS "${BACKEND_BINARY_DIR}" OR NOT EXISTS "${LLVM_DIR}")
+  message(FATAL_ERROR "BACKEND_BINARY_DIR or LLVM_DIR not found")
+endif ()
+
 if (BINARY_DIR_NAME STREQUAL "lotus")
-  if (NOT EXISTS "${LOTUS_BINARY_DIR}" OR NOT EXISTS "${LLVM_DIR}")
-    message(FATAL_ERROR "LOTUS_BINARY_DIR or LLVM_DIR not found")
-  endif ()
   find_package(LLVM REQUIRED CONFIG PATHS ${LLVM_DIR} NO_DEFAULT_PATH)
   if (NOT LLVM_VERSION_MAJOR EQUAL 14)
     message(FATAL_ERROR "LLVM version 14 != ${LLVM_VERSION_MAJOR}")
   endif ()
   message(STATUS "LLVM version check - ok")
 
-  set(LOTUS_LIB_DIR ${LOTUS_BINARY_DIR}/lib)
-  get_filename_component(LOTUS_INCLUDE_DIR ${LOTUS_BINARY_DIR}/../include ABSOLUTE)
+  set(LOTUS_LIB_DIR ${BACKEND_BINARY_DIR}/lib)
+  get_filename_component(LOTUS_INCLUDE_DIR ${BACKEND_BINARY_DIR}/../include ABSOLUTE)
   set(_LOTUS_LIBS
     CanaryAliasAnalysisWrapper SVFG CanaryICFG AserPTA CanaryDynamicAA
     CanaryAliasCLIUtils AliasSpecManager CanaryAliasPtsSet Andersen CanaryCUDD CanaryLLVMUtils Annotation
@@ -47,16 +48,13 @@ if (BINARY_DIR_NAME STREQUAL "lotus")
   message(STATUS "Lotus libs check in ${LOTUS_LIB_DIR} - ok")
 
 elseif (BINARY_DIR_NAME STREQUAL "cclyzerpp")
-  if (NOT EXISTS "${CCLYZERPP_BINARY_DIR}" OR NOT EXISTS "${LLVM_DIR}")
-    message(FATAL_ERROR "CCLYZERPP_BINARY_DIR or LLVM_DIR not found")
-  endif ()
   find_package(LLVM REQUIRED CONFIG PATHS ${LLVM_DIR} NO_DEFAULT_PATH)
   if (NOT LLVM_VERSION_MAJOR EQUAL 14)
     message(FATAL_ERROR "LLVM version 14 != ${LLVM_VERSION_MAJOR}")
   endif ()
   message(STATUS "LLVM version check - ok")
   
-  set(CCLYZERPP_LIB_DIR ${CCLYZERPP_BINARY_DIR}) # not put under `/lib`
+  set(CCLYZERPP_LIB_DIR ${BACKEND_BINARY_DIR}) # not put under `/lib`
   get_filename_component(CCLYZERPP_INCLUDE_DIR ${CCLYZERPP_BINARY_DIR}/../.. ABSOLUTE)
   set(_CCLYZERPP_LIBS PAPass SoufflePA)
   foreach(lib ${_CCLYZERPP_LIBS})
@@ -73,16 +71,13 @@ elseif (BINARY_DIR_NAME STREQUAL "cclyzerpp")
   message(STATUS "Cclyzer++ libs check in ${CCLYZERPP_LIB_DIR} - ok")
     
 elseif (BINARY_DIR_NAME STREQUAL "svf")
-  if (NOT EXISTS "${SVF_BINARY_DIR}" OR NOT EXISTS "${LLVM_DIR}")
-    message(FATAL_ERROR "SVF_BINARY_DIR or LLVM_DIR not found")
-  endif ()
   find_package(LLVM REQUIRED CONFIG PATHS ${LLVM_DIR} NO_DEFAULT_PATH)
   if (LLVM_VERSION_MAJOR LESS 16)
     message(FATAL_ERROR "LLVM version 16 > ${LLVM_VERSION_MAJOR}")
   endif ()
   message(STATUS "LLVM version check - ok")
 
-  find_package(SVF REQUIRED CONFIG HINTS  ${SVF_BINARY_DIR})
+  find_package(SVF REQUIRED CONFIG HINTS  ${BACKEND_BINARY_DIR})
 
 else()
   message(FATAL_ERROR "BINARY_DIR_NAME must be 'lotus' 'cclyzerpp' or 'svf', got '${BINARY_DIR_NAME}'")
@@ -116,8 +111,8 @@ endforeach()
 unset(_LLVM_BC_TOOLS)
 
 execute_process(
-COMMAND sh -c "${CL} -c ${CMAKE_SOURCE_DIR}/tests/toolchain/m1.cpp -o ${_TC}/m1.o -flto -fPIE && \
-                ${CL} -c ${CMAKE_SOURCE_DIR}/tests/toolchain/m2.c -o ${_TC}/m2.o -flto -fPIE && \
+COMMAND sh -c "${CL} -c ${CMAKE_SOURCE_DIR}/tests/toolchain/m1.cpp -o ${_TC}/m1.o -flto && \
+                ${CL} -c ${CMAKE_SOURCE_DIR}/tests/toolchain/m2.c -o ${_TC}/m2.o -flto && \
                 ${AR} rcs ${_TC}/toolchain.a ${_TC}/m1.o ${_TC}/m2.o && \
                 ${CMAKE_COMMAND} -E env LLVM_TOOLS_DIR=${LLVM_TOOLS_BINARY_DIR} \
                 bash ${CMAKE_SOURCE_DIR}/scripts/a2bc.sh ${_TC}/toolchain.a >/dev/null && \

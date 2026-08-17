@@ -7,6 +7,7 @@
 
 #include <iostream>
 #include <algorithm>
+#include <queue>
 
 PAWrapper::~PAWrapper() = default;
 
@@ -32,6 +33,8 @@ void PAWrapper::computeAllocationSites() {
       for (auto &I : BB) {
         AllocationSite site;
         if (auto *CB = llvm::dyn_cast<llvm::CallBase>(&I)) {
+          auto func = CB->getCalledFunction();
+          if (!func || llvmSkip(func)) continue;
           if (builtins.isHeapAllocationSite(CB)) {
             site.type = AllocationSite::HEAP;
             site.site = CB;
@@ -118,16 +121,41 @@ std::string PAWrapper::handleQueryWrapper(const std::string &req) {
       }
       if constexpr (std::is_same_v<T, ReachableIn>) {
         _cg.buildCG([this](llvm::CallBase *callInst) {return this->indirectCallResolver(callInst);});
-        return ReachableOut{ std::move(_cg.reach(arg.from, arg.to)) };
+        return ReachableOut{ std::move(_cg.reach(arg.from, arg.to, arg.ignoreUnknown)) };
       }
       if constexpr (std::is_same_v<T, CallOutEdgesIn>) {
         _cg.buildCG([this](llvm::CallBase *callInst) {return this->indirectCallResolver(callInst);});
-        return CallOutEdgesOut{ _cg.getOutEdges(arg.f) };
+        return CallOutEdgesOut{ _cg.getOutEdges(arg.f), arg.ignoreCS };
       }
       if constexpr (std::is_same_v<T, CallInEdgesIn>) {
         _cg.buildCG([this](llvm::CallBase *callInst) {return this->indirectCallResolver(callInst);});
         _cg.buildReverseCG();
-        return CallInEdgesOut{ _cg.getInEdges(arg.f), _cg.getCallAnythingEdges() };
+        return CallInEdgesOut{ _cg.getInEdges(arg.f), _cg.getCallAnythingEdges(), arg.ignoreCS };
+      }
+      if constexpr (std::is_same_v<T, CallGraphIn>) {
+        _cg.buildCG([this](llvm::CallBase *callInst) {return this->indirectCallResolver(callInst);});
+        CallTreeMap tree;
+        std::queue<std::pair<unsigned, llvm::Function *>> q; // BFS to reach maxDepth
+        llvm::DenseSet<llvm::Function *> visited;
+        q.push({0, arg.f});
+        visited.insert(arg.f);
+        while (!q.empty()) {
+          auto [depth, func] = q.front();
+          q.pop();
+          if (depth >= arg.maxDepth) continue;
+          auto edges = _cg.getOutEdges(func); // llvm::ArrayRef<>
+          for (auto &edge : edges) {
+            auto &treeEdges = tree[func];
+            if (treeEdges.find(edge.callee) != treeEdges.end()) continue;
+            bool silence = edge.callee && shouldSilence(edge.callee->getName().str());
+            if (!silence) treeEdges.insert(edge.callee);
+            if (edge.type != ptacxx::CallEdge::CALLANYTHING && !visited.contains(edge.callee)) {
+              q.push({depth+!silence, edge.callee});
+              visited.insert(edge.callee);
+            }
+          }
+        }
+        return CallGraphOut{ {arg.f, std::move(tree)} };
       }
       if constexpr (std::is_same_v<T, AllAllocSitesIn>) {
         computeAllocationSites();
@@ -192,7 +220,7 @@ int PAWrapper::run() {
     std::string input;
     std::getline(std::cin, input);
     std::string output = handleQueryWrapper(input);
-    std::cout << "\n<queryresult>\n" << output << "\n</queryresult>\n";
+    std::cout << input << "\n<queryresult>\n" << output << "\n</queryresult>\n";
     if (std::cin.eof()) break;
   }
   return 0;
