@@ -1,6 +1,7 @@
 #include "QueryInterface.h"
 #include "LLVMUtils.h"
 
+#include <llvm/ADT/DenseSet.h>
 #include <llvm/Support/raw_ostream.h>
 
 #include <type_traits>
@@ -58,10 +59,11 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       return PAQuery{IRParseMessage{
           "commands:\n"
           "  stat | s              show IR metadata and statistics\n"
-          "  list | l [prefix]     list globals (including functions), to see its vid, demangled prefix allowed\n"
+          "  list | l [prefix]     list globals (including functions) or identified struct types, to see its vid, demangled prefix allowed\n"
           "  site [vid]            list allocation sites of a function or all\n"
           "  debug | d <vid> [n=1] print detailed value debug info, to locate and debug; n = number of subsequent neighbors to show\n"
-          "  cg <vid> [n=5]       print call graph of a function; integer n: max depth\n"
+          "  st <vid>              print struct type debug info\n"
+          "  cg <vid> [n=5]        print call graph of a function; integer n: max depth\n"
           "  alias | a <vid> <vid> get alias result\n"
           "  aliasset <vid>        get alias set of a pointer (TODO)\n"
           "  pt <vid> <vid>        get points-to result\n"
@@ -93,11 +95,16 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       if (namePrefix.size() && namePrefix[0] == '@') namePrefix = namePrefix.substr(1);
       std::string buf;
       llvm::raw_string_ostream os(buf);
+      llvm::DenseSet<VId> Seen;
       for (auto &[name, vid] : irm.listGlobal(namePrefix)) {
-        auto value = irm.vidToValue(vid);
-        if (stdSilence) if (auto GVal = llvm::dyn_cast<llvm::GlobalValue>(value))
-          if (shouldSilence(GVal->getName().str())) continue;
-        irm.printValue(os, value, detailed ? IRManager::PRT_DETAILED : IRManager::PRT_VID) << "\n";
+        if (!Seen.insert(vid).second) continue;
+        if (auto *ST = irm.vidToIdStruct(vid)) {
+          irm.printIdStructType(os, ST, detailed ? IRManager::PRT_DETAILED : IRManager::PRT_VID)<< "\n";
+        } else if (auto *value = irm.vidToValue(vid)) {
+          if (stdSilence) if (auto GVal = llvm::dyn_cast<llvm::GlobalValue>(value))
+            if (shouldSilence(GVal->getName().str())) continue;
+          irm.printValue(os, value, detailed ? IRManager::PRT_DETAILED : IRManager::PRT_VID) << "\n";
+        }
       }
       os.flush();
       return PAQuery{IRParseMessage{buf}};
@@ -108,7 +115,7 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       if (vidStr.empty()) return PAQuery{AllAllocSitesIn{}};
       if (!unread2.empty())
         return PAQuery{SyntaxError{"site [function]"}};
-      if (auto F = llvm::dyn_cast<llvm::Function>(irm.vidToValue(parseVid(vidStr))))
+      if (auto F = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(parseVid(vidStr))))
         return PAQuery{AllocSitesIn{F}};
       return PAQuery{IRParseError{"vid not found or not a function vid"}};
     }
@@ -120,7 +127,7 @@ PAQuery parse(const std::string &input, IRManager &irm) {
         return PAQuery{SyntaxError{"cg <vid> [n=5]"}};
       unsigned n = 5;
       if (!nStr.empty()) n = static_cast<unsigned>(toIntStrict(nStr));
-      if (auto F = llvm::dyn_cast<llvm::Function>(irm.vidToValue(parseVid(vidStr)))) {
+      if (auto F = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(parseVid(vidStr)))) {
         return PAQuery{CallGraphIn{F, n, stdSilence, llvmSilence}};
       }
       return PAQuery{IRParseError{"vid not found or not a function vid"}};
@@ -140,6 +147,20 @@ PAQuery parse(const std::string &input, IRManager &irm) {
         if (auto *V = irm.vidToValue(start+i))
           irm.printValue(os, V, IRManager::PRT_DEBUG);
       }
+      os.flush();
+      if (buf.size()) return PAQuery{IRParseMessage{buf}};
+      return PAQuery{IRParseError{"vid not found"}};
+    }
+
+    if (cmd == "st") {
+      auto [vidStr, unread2] = eatToken(unread);
+      if (vidStr.empty() || unread2.size())
+        return PAQuery{SyntaxError{"st <vid>"}};
+      auto vid = parseVid(vidStr);
+      std::string buf;
+      llvm::raw_string_ostream os{buf};
+      if (auto *ST = irm.vidToIdStruct(vid))
+        irm.printIdStructType(os, ST, IRManager::PRT_DEBUG);
       os.flush();
       if (buf.size()) return PAQuery{IRParseMessage{buf}};
       return PAQuery{IRParseError{"vid not found"}};
@@ -191,8 +212,8 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       auto [iStr, unread4] = eatToken(unread3);
       if (fromStr.empty() || toStr.empty() || (iStr.size() && iStr != "i"))
         return PAQuery{SyntaxError{"reach <from> <to> <i>"}};
-      if (auto from = llvm::dyn_cast<llvm::Function>(irm.vidToValue(parseVid(fromStr))))
-        if (auto to = llvm::dyn_cast<llvm::Function>(irm.vidToValue(parseVid(toStr))))
+      if (auto from = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(parseVid(fromStr))))
+        if (auto to = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(parseVid(toStr))))
           return PAQuery{ReachableIn{from, to, !!iStr.size()}};
       return PAQuery{IRParseError{"vid(s) not found or not function vid(s)"}};
     }
@@ -202,7 +223,7 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       auto [iStr, unread3] = eatToken(unread2);
       if (vidStr.empty() || unread3.size() || (iStr.size() && iStr != "i"))
         return PAQuery{SyntaxError{"callout <vid> <i>"}};
-      if (auto F = llvm::dyn_cast<llvm::Function>(irm.vidToValue(parseVid(vidStr))))
+      if (auto F = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(parseVid(vidStr))))
         return PAQuery{CallOutEdgesIn{F, !!iStr.size()}};
       return PAQuery{IRParseError{"vid not found or not a function vid"}};
     }
@@ -212,7 +233,7 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       auto [iStr, unread3] = eatToken(unread2);
       if (vidStr.empty() || unread2.size() || (iStr.size() && iStr != "i"))
         return PAQuery{SyntaxError{"callin <vid> <i>"}};
-      if (auto F = llvm::dyn_cast<llvm::Function>(irm.vidToValue(parseVid(vidStr))))
+      if (auto F = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(parseVid(vidStr))))
         return PAQuery{CallInEdgesIn{F, !!iStr.size()}};
       return PAQuery{IRParseError{"vid not found or not a function vid"}};
     }

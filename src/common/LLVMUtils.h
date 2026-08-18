@@ -8,29 +8,38 @@
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/Config/llvm-config.h>
 #include <llvm/Demangle/Demangle.h>
+#include <llvm/ADT/StringRef.h>
 
 #include <utility>
 
 llvm::LLVMContext &getThreadLocalContext();
 
+static inline bool llvmStartsWith(llvm::StringRef Str, llvm::StringRef Prefix) {
+#if LLVM_VERSION_MAJOR >= 15
+  return Str.starts_with(Prefix);
+#else
+  return Str.startswith(Prefix);
+#endif
+}
+
+static inline bool llvmEndsWith(llvm::StringRef Str, llvm::StringRef Suffix) {
+#if LLVM_VERSION_MAJOR >= 15
+  return Str.ends_with(Suffix);
+#else
+  return Str.endswith(Suffix);
+#endif
+}
+
 /// @brief this will not skip all declarations, only the ones that start with "llvm."
 static inline bool llvmSkip(llvm::Function *F) {
   if (F->isIntrinsic()) return true;
   llvm::StringRef Name = F->getName();
-#if LLVM_VERSION_MAJOR < 15
-  return Name.startswith("llvm.");
-#else
-  return Name.substr(0, 5) == "llvm.";
-#endif
+  return llvmStartsWith(Name, "llvm.");
 }
 
 static inline bool llvmSkip(llvm::GlobalVariable *GV) {
   llvm::StringRef Name = GV->getName();
-#if LLVM_VERSION_MAJOR < 15
-  return Name.startswith("llvm.");
-#else
-  return Name.substr(0, 5) == "llvm.";
-#endif
+  return llvmStartsWith(Name, "llvm.");
 }
 
 static inline llvm::Function *declFn(llvm::Module &M, const llvm::Twine &name, 
@@ -87,5 +96,7 @@ std::string getDemangledName(const std::string &mangled);
 
 /// split the name to namespace and the remain, right-assoc (A::B::C -> (A,B::C))
 std::pair<std::string, std::string> getNamespacePair(const std::string &demangled);
+
+std::string getAllNamespaceStripped(const std::string &demangled);
 
 bool shouldSilence(const std::string& mangledName, bool std, bool llvm, bool runtime);

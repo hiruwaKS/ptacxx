@@ -6,6 +6,7 @@
 #include <llvm/Analysis/TargetLibraryInfo.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Value.h>
+#include "llvm/IR/DerivedTypes.h"
 #include <llvm/Bitcode/BitcodeWriter.h>
 #if LLVM_VERSION_MAJOR < 16
 #include <llvm/ADT/Triple.h>
@@ -30,6 +31,7 @@ struct IRStat {
   std::string dataLayout;
   std::string llvmIdent; std::string clangVersion; std::string optlevel; std::string commandline; std::string llvmModuleDeps;
   int funcCnt; int globalCnt; int localCnt;
+  int idStructTypeCnt;
   int globalPtrCnt; int argPtrCnt; int instPtrCnt; 
   bool hasMain; bool hasGlobalCtor; bool hasGlobalDtor;
 };
@@ -59,6 +61,9 @@ private:
 	SortedVector<GlobalEntry> _globalStringToIdxCache;
 	llvm::DenseMap<VId, llvm::Value *> _vidToValueCache;
   llvm::DenseMap<llvm::Value *, VId> _valueToVidCache;
+	/// idStruct is short for "identified struct"
+	llvm::DenseMap<llvm::StructType *, VId> _idStructToVidCache;
+	llvm::DenseMap<VId, llvm::StructType *> _vidToIdStructCache;
 
 public:
   enum PrintLevel {
@@ -83,9 +88,22 @@ public:
     return it != _valueToVidCache.end() ? it->second : VID_NOT_REGISTERED;
   }
 
+  /// @return nullptr if not found
   llvm::Value *vidToValue(VId id) const {
     auto it = _vidToValueCache.find(id);
-    return it != _vidToValueCache.end() ? it->second : throw std::runtime_error("vid not found");
+    return it != _vidToValueCache.end() ? it->second : nullptr;
+  }
+
+  VId idStructToVId(llvm::StructType *ST) const {
+    if (!ST) throw std::runtime_error("pass nullptr to idStructToVId");
+    auto it = _idStructToVidCache.find(ST);
+    return it != _idStructToVidCache.end() ? it->second : VID_NOT_REGISTERED;
+  }
+
+  /// @return nullptr if not found
+  llvm::StructType *vidToIdStruct(VId id) const {
+    auto it = _vidToIdStructCache.find(id);
+    return it != _vidToIdStructCache.end() ? it->second : nullptr;
   }
 
   llvm::ArrayRef<GlobalEntry> listGlobal(const std::string &prefix) const;
@@ -93,6 +111,8 @@ public:
   /// @note if debugInfo is printed, the result will be multi-line
   /// @warning debugInfo may be costly, don't call it in every query
   llvm::raw_ostream &printValue(llvm::raw_ostream &os, llvm::Value *V, PrintLevel pl) const;
+
+  llvm::raw_ostream &printIdStructType(llvm::raw_ostream &os, llvm::StructType *ST, PrintLevel pl) const;
 
   llvm::raw_ostream &printStat(llvm::raw_ostream &os) const;
 

@@ -10,10 +10,13 @@
 #include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/ValueSymbolTable.h>
+#include <llvm/ADT/DenseSet.h>
 #include <llvm/IRReader/IRReader.h>
 #include <llvm/Support/SourceMgr.h>
 #include <llvm/Config/llvm-config.h>
 
+#include <algorithm>
+#include <functional>
 #include <fstream>
 
 /// print lines from a file, [start, end]
@@ -56,8 +59,49 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
   int funcCnt = 0, argPtrCnt = 0, instPtrCnt = 0;
   int localIdx = 0;
   VId vidCnt = 0;
+  int idStructTypeCnt = 0;
+
+  auto recordStructTypes = [&](llvm::Type *Ty) {
+    assert(Ty);
+    llvm::DenseSet<llvm::Type *> Visited;
+    std::vector<llvm::Type *> Worklist{Ty};
+    while (!Worklist.empty()) {
+      llvm::Type *CurTy = Worklist.back(); assert(CurTy);
+      Worklist.pop_back();
+      if (!Visited.insert(CurTy).second) continue;
+      if (auto *ST = llvm::dyn_cast<llvm::StructType>(CurTy)) {
+        if (ST->hasName() && !ST->getName().empty()) {
+          auto Inserted = _idStructToVidCache.try_emplace(ST, vidCnt);
+          if (Inserted.second) {
+            _vidToIdStructCache[vidCnt] = ST;
+            auto name = ST->getName().str();
+            _globalStringToIdxCache.push_back( { name, vidCnt} );
+            std::string striped;
+            if (name.starts_with("struct.")) striped = name.substr(7);
+            else if (name.starts_with("class.")) striped = name.substr(6);
+            else if (name.starts_with("union.")) striped = name.substr(6);
+            else if (name.starts_with("enum.")) striped = name.substr(5);
+            while (true) {
+              if (striped != name) 
+                _globalStringToIdxCache.push_back( {striped, vidCnt} );
+              auto [ns, remain] = getNamespacePair(striped);
+              if (ns == "") break;
+              striped = remain;
+            }
+            ++vidCnt;
+            ++idStructTypeCnt;
+          }
+        }
+      }
+      for (llvm::Type *SubTy : CurTy->subtypes()) Worklist.push_back(SubTy);
+    }
+  };
 
   for (auto &GV : M.globals()) {
+    recordStructTypes(GV.getValueType());
+    if (GV.hasInitializer())
+      recordStructTypes(GV.getInitializer()->getType());
+
     _vidToValueCache[vidCnt] = &GV;
     _valueToVidCache[&GV] = vidCnt;
     auto mangledName = GV.getName().str();
@@ -82,6 +126,7 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
 
   for (auto &F : M) {
     ++funcCnt;
+    // recordStructTypes(F.getFunctionType());
 
     _vidToValueCache[vidCnt] = &F;
     _valueToVidCache[&F] = vidCnt;
@@ -100,6 +145,8 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
     ++vidCnt;
 
     for (auto &Arg : F.args()) {
+      // recordStructTypes(Arg.getType());
+
       _vidToValueCache[vidCnt] = &Arg;
       _valueToVidCache[&Arg] = vidCnt;
       ++vidCnt;
@@ -115,6 +162,15 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
         // note: number void instrument, to see where pointers are used (store)
         // if (I.getType()->isVoidTy())
         //   continue;
+        // recordStructTypes(I.getType());
+        if (auto *AI = llvm::dyn_cast<llvm::AllocaInst>(&I))
+          recordStructTypes(AI->getAllocatedType());
+        if (auto *GEP = llvm::dyn_cast<llvm::GetElementPtrInst>(&I))
+          recordStructTypes(GEP->getSourceElementType());
+        for (const llvm::Use &U : I.operands())
+          if (U.get())
+            recordStructTypes(U.get()->getType());
+
         _vidToValueCache[vidCnt] = &I;
         _valueToVidCache[&I] = vidCnt;
         ++vidCnt;
@@ -126,6 +182,7 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
     ++globalCnt;
   }
   std::sort(_globalStringToIdxCache.begin(), _globalStringToIdxCache.end());
+  _irStat.idStructTypeCnt = idStructTypeCnt;
   _irStat.argPtrCnt = argPtrCnt;
   _irStat.instPtrCnt = instPtrCnt;
   _irStat.funcCnt = funcCnt;
@@ -350,6 +407,62 @@ llvm::raw_ostream &IRManager::printValue(llvm::raw_ostream &os, llvm::Value *V, 
   }
   return os;
 }
+llvm::raw_ostream &IRManager::printIdStructType(llvm::raw_ostream &os, llvm::StructType *ST, PrintLevel pl) const {
+  if (!ST) throw std::runtime_error("pass nullptr to printIdStructType");
+  os << idStructToVId(ST);
+  if (pl == PrintLevel::PRT_VID) return os;
+  os << " " << (ST->hasName() ? ST->getName() : "<unnamed id struct>");
+  if (pl != PrintLevel::PRT_DEBUG) return os;
+  os << "\n";
+  ST->print(os);
+  os << "\n";
+
+  std::string StructTyName = ST->getName().str();
+  std::string CleanName = StructTyName;
+  for (llvm::StringRef prefix : {"struct.", "class.", "union.", "enum."}) {
+    if (CleanName.find(prefix) == 0) {
+      CleanName = CleanName.substr(prefix.size());
+      break;
+    }
+  }
+  size_t dotPos = CleanName.find_last_of('.');
+  if (dotPos != std::string::npos) CleanName = CleanName.substr(0, dotPos);
+  std::string ClassNameOnly = getAllNamespaceStripped(CleanName);
+
+  for (const llvm::Function &F : _module->functions()) {
+    if (auto *SP = F.getSubprogram()) {
+      if (auto *CT = llvm::dyn_cast<llvm::DICompositeType>(SP->getScope())) {
+        std::string DITypeName = CT->getName().str();
+        if (!DITypeName.empty() && ClassNameOnly == DITypeName) {
+          unsigned lineStart = CT->getLine();
+          unsigned lineEnd = lineStart;
+
+          llvm::DINodeArray Elements = CT->getElements();
+          for (auto *Element : Elements) {
+            if (auto *DIE = llvm::dyn_cast<llvm::DIDerivedType>(Element)) {
+              if (DIE->getLine() > lineEnd)
+                lineEnd = DIE->getLine();
+            }
+          }
+
+          std::string path;
+          if (auto *File = CT->getFile()) {
+            path = (File->getDirectory() + "/" + File->getFilename()).str();
+          }
+          if (lineStart > 0 && !path.empty()) {
+            os << "<src LINE " << lineStart << ":" << lineEnd
+               << " in " << path << ">\n";
+            printLinesFromFile(os, path, lineStart, lineEnd);
+            os << "</src>\n";
+          }
+          return os;
+        }
+      }
+    }
+  }
+
+  return os;
+}
 
 llvm::raw_ostream &IRManager::printStat(llvm::raw_ostream &os) const {
   os << "moduleID: " << _irStat.moduleID << "\n"
@@ -363,6 +476,7 @@ llvm::raw_ostream &IRManager::printStat(llvm::raw_ostream &os) const {
      << "llvmModuleDeps: " << _irStat.llvmModuleDeps << "\n"
      << "funcCnt: " << _irStat.funcCnt << "\n"
      << "globalCnt: " << _irStat.globalCnt << "\n"
+     << "idStructTypeCnt: " << _irStat.idStructTypeCnt << "\n"
      << "localCnt: " << _irStat.localCnt << "\n"
      << "globalPtrCnt: " << _irStat.globalPtrCnt << "\n"
      << "argPtrCnt: " << _irStat.argPtrCnt << "\n"

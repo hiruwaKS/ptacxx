@@ -21,6 +21,7 @@ add_custom_target(svf-wpa_bc ALL
     bash ${CMAKE_SOURCE_DIR}/scripts/a2bc.sh
     $<TARGET_FILE:svf-wpa_a>
     $<TARGET_FILE:common>
+    $<TARGET_FILE:SVF::SvfCore>
     $<TARGET_FILE:SVF::SvfLLVM>
   DEPENDS svf-wpa_a common
 )

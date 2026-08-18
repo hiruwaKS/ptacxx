@@ -52,6 +52,16 @@ std::pair<std::string, std::string> getNamespacePair(const std::string &demangle
   return {"", demangled};
 }
 
+std::string getAllNamespaceStripped(const std::string &demangled) {
+  std::string Current = demangled;
+  while (true) {
+    auto Pair = getNamespacePair(Current);
+    if (Pair.first.empty()) break;
+    Current = Pair.second;
+  }
+  return Current;
+}
+
 bool shouldSilence(const std::string& mangledName, bool std, bool llvm, bool runtime) {
   auto demangled = getDemangledName(mangledName);
   auto ns = getNamespacePair(demangled).first;
