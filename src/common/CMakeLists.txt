@@ -1,4 +1,5 @@
 add_library(common STATIC
+  CommandLine.cpp
   IRManager.cpp
   MemoryBuiltins.cpp
   LLVMUtils.cpp

@@ -9,6 +9,19 @@
 #include <algorithm>
 #include <queue>
 
+namespace ptacxx::options {
+/// @note this will gather all options that used in PAWrapper, defined dispersedly
+extern std::string CGPatchPath;
+bool CGPatchCLIntercept::interceptOption(const std::string &key,
+                                         const std::string &value) {
+  if (key == "cgpatch-path") {
+    CGPatchPath = value;
+    return true;
+  }
+  return false;
+}
+} // namespace ptacxx::options
+
 PAWrapper::~PAWrapper() = default;
 
 void PAWrapper::computeAllocationSites() {
@@ -120,20 +133,20 @@ std::string PAWrapper::handleQueryWrapper(const std::string &req) {
         return AliasOut{ getAliasResultCached(arg.a, arg.b) };
       }
       if constexpr (std::is_same_v<T, ReachableIn>) {
-        _cg.buildCG([this](llvm::CallBase *callInst) {return this->indirectCallResolver(callInst);});
+        _cg.buildCG([this](llvm::CallBase *callInst, llvm::Function *caller) {return this->indirectCallResolver(callInst, caller);});
         return ReachableOut{ std::move(_cg.reach(arg.from, arg.to, arg.ignoreUnknown)) };
       }
       if constexpr (std::is_same_v<T, CallOutEdgesIn>) {
-        _cg.buildCG([this](llvm::CallBase *callInst) {return this->indirectCallResolver(callInst);});
+        _cg.buildCG([this](llvm::CallBase *callInst, llvm::Function *caller) {return this->indirectCallResolver(callInst, caller);});
         return CallOutEdgesOut{ _cg.getOutEdges(arg.f), arg.ignoreCS };
       }
       if constexpr (std::is_same_v<T, CallInEdgesIn>) {
-        _cg.buildCG([this](llvm::CallBase *callInst) {return this->indirectCallResolver(callInst);});
+        _cg.buildCG([this](llvm::CallBase *callInst, llvm::Function *caller) {return this->indirectCallResolver(callInst, caller);});
         _cg.buildReverseCG();
         return CallInEdgesOut{ _cg.getInEdges(arg.f), _cg.getCallAnythingEdges(), arg.ignoreCS };
       }
       if constexpr (std::is_same_v<T, CallGraphIn>) {
-        _cg.buildCG([this](llvm::CallBase *callInst) {return this->indirectCallResolver(callInst);});
+        _cg.buildCG([this](llvm::CallBase *callInst, llvm::Function *caller) {return this->indirectCallResolver(callInst, caller);});
         CallTreeMap tree;
         std::queue<std::pair<unsigned, llvm::Function *>> q; // BFS to reach maxDepth
         llvm::DenseSet<llvm::Function *> visited;
@@ -156,6 +169,11 @@ std::string PAWrapper::handleQueryWrapper(const std::string &req) {
           }
         }
         return CallGraphOut{ {arg.f, std::move(tree)} };
+      }
+      if constexpr (std::is_same_v<T, CGReloadIn>) {
+        _cg.rebuild();
+        _cgPatchLoaded = false;
+        return IRParseMessage{"ok"};
       }
       if constexpr (std::is_same_v<T, AllAllocSitesIn>) {
         computeAllocationSites();
@@ -201,15 +219,27 @@ PTAliasResult PAWrapper::aliasByIntersection(PointsToSetView pts1, PointsToSetVi
   return intersect ? llvm::AliasResult::MayAlias : llvm::AliasResult::NoAlias;
 }
 
-llvm::SmallVector<ptacxx::CallGraph::ResolvedTarget, 4> PAWrapper::indirectCallResolver(llvm::CallBase *callInst) {
+llvm::SmallVector<ptacxx::CallGraph::ResolvedTarget, 4>
+PAWrapper::indirectCallResolver(llvm::CallBase *callInst, llvm::Function *caller) {
   llvm::SmallVector<ptacxx::CallGraph::ResolvedTarget, 4> targets;
-  llvm::Value *calledValue = callInst->getCalledOperand();
-  assert(calledValue);
-  auto pts = getPointsToSetCached(calledValue);
-  if (!pts) targets.push_back(std::make_pair(ptacxx::CallEdge::CALLANYTHING, nullptr));
-  else for (auto ptr : pts.value()) {
-    if (auto func = llvm::dyn_cast<llvm::Function>(ptr))
-      targets.push_back(std::make_pair(ptacxx::CallEdge::INDIRECT, func));
+  if (callInst) {
+    llvm::Value *calledValue = callInst->getCalledOperand();
+    assert(calledValue);
+    auto pts = getPointsToSetCached(calledValue);
+    if (!pts) targets.push_back(std::make_pair(ptacxx::CallEdge::CALLANYTHING, nullptr));
+    else for (auto ptr : pts.value()) {
+      if (auto func = llvm::dyn_cast<llvm::Function>(ptr))
+        targets.push_back(std::make_pair(ptacxx::CallEdge::INDIRECT, func));
+    }
+  } else if (caller) {
+    if (!_cgPatchLoaded) {
+      loadCGPatch(_irm, _cgPatchOut);
+      _cgPatchLoaded = true;
+    }
+    auto it = _cgPatchOut.find(caller);
+    if (it != _cgPatchOut.end())
+      for (llvm::Function *callee : it->second)
+        targets.push_back(std::make_pair(ptacxx::CallEdge::INDIRECT, callee));
   }
   return targets;
 }

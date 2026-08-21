@@ -11,6 +11,15 @@
 using namespace llvm;
 using namespace ptacxx;
 
+void CallGraph::rebuild() {
+  _cgBuilt = false;
+  _revBuilt = false;
+  _CG.clear();
+  _edges.clear();
+  _revCG.clear();
+  _callAnything.clear();
+}
+
 void CallGraph::buildCG(IndirectResolver indirectResolver) {
   if (_cgBuilt) return;
   for (Function &F : _irm.getModule()) {
@@ -29,7 +38,7 @@ void CallGraph::buildCG(IndirectResolver indirectResolver) {
             edge.callee = directCallee;
             _edges.push_back(edge);
           } else {
-            SmallVector<ResolvedTarget, 4> targets = indirectResolver(callInst);
+            SmallVector<ResolvedTarget, 4> targets = indirectResolver(callInst, &F);
             for (const auto &target : targets) {
               CallEdge resolvedEdge = edge;
               resolvedEdge.type = target.first;
@@ -40,6 +49,14 @@ void CallGraph::buildCG(IndirectResolver indirectResolver) {
         }
       }
     }    
+    for (const auto &target : indirectResolver(nullptr, &F)) {
+      CallEdge resolvedEdge;
+      resolvedEdge.type = target.first;
+      resolvedEdge.caller = &F;
+      resolvedEdge.callsite = nullptr;
+      resolvedEdge.callee = target.second;
+      _edges.push_back(resolvedEdge);
+    }
     size_t endIdx = _edges.size();
     if (startIdx != endIdx) {
       _CG[&F] = std::make_pair(startIdx, endIdx);

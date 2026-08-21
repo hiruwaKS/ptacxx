@@ -269,6 +269,7 @@ private:
 AserPTAQueryServer::~AserPTAQueryServer() = default;
 
 int main(int argc, char **argv) {
+  ptacxx::options::CGPatchCLIntercept().go(argc, argv);
   InitLLVM X(argc, argv);
   // Parse command line
   cl::ParseCommandLineOptions(

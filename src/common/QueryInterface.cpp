@@ -4,7 +4,15 @@
 #include <llvm/ADT/DenseSet.h>
 #include <llvm/Support/raw_ostream.h>
 
+#include <fstream>
 #include <type_traits>
+
+LLVM_CL_IGNORE_WARNINGS_BEGIN
+namespace ptacxx::options {
+extern std::string CGPatchPath;
+std::string CGPatchPath;
+}
+LLVM_CL_IGNORE_WARNINGS_END
 
 static constexpr char DELIMITERS[] = " \t\r\n";
 
@@ -48,6 +56,22 @@ std::string modalityToString(ModalityResult modal) {
   return modal == ResultMust ? "Must" : modal == ResultMay ? "May" : "No";
 }
 
+void loadCGPatch(IRManager &irm, CGPatchMap &out) {
+  if (ptacxx::options::CGPatchPath.empty()) return;
+  std::ifstream in(ptacxx::options::CGPatchPath);
+  if (!in) throw std::runtime_error("cannot open " + ptacxx::options::CGPatchPath);
+  out.clear();
+  std::string caller, callee;
+  while (std::getline(in, caller)) {
+    if (caller.empty()) continue;
+    if (!std::getline(in, callee) || !callee.size()) throw std::runtime_error("missing callee");
+    auto *f1 = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(irm.getGlobal(caller).id));
+    auto *f2 = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(irm.getGlobal(callee).id));
+    if (f1 && f2) out[f1].push_back(f2);
+    else throw std::runtime_error("vid not found");
+  }
+}
+
 PAQuery parse(const std::string &input, IRManager &irm) {
   try {
     auto [cmd, unread] = eatToken(input);
@@ -71,6 +95,8 @@ PAQuery parse(const std::string &input, IRManager &irm) {
           "  reach <vid> <vid> <i> get call-graph reachability; flag i: ignore unknown call\n"
           "  callout <vid> <i>     get outgoing calls of a function; flag i: ignore callsites, print a callee set\n"
           "  callin <vid> <i>      get incoming calls of a function; flag i: ignore callsites, print a caller set\n"
+          "  cgpatch <vid> <vid>   append a call graph patch edge to CGPatch file\n"
+          "  cgreload              rebuild call graph\n"
           "  detail                toggle vid printing mode\n"
           "  stds                  toggle whether to silence std:: globals\n"
           "  llvms                 toggle whether to silence llvm:: globals\n"
@@ -96,7 +122,8 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       std::string buf;
       llvm::raw_string_ostream os(buf);
       llvm::DenseSet<VId> Seen;
-      for (auto &[name, vid] : irm.listGlobal(namePrefix)) {
+      for (const GlobalEntry &entry : irm.listGlobal(namePrefix)) {
+        VId vid = entry.id;
         if (!Seen.insert(vid).second) continue;
         if (auto *ST = irm.vidToIdStruct(vid)) {
           irm.printIdStructType(os, ST, detailed ? IRManager::PRT_DETAILED : IRManager::PRT_VID)<< "\n";
@@ -238,6 +265,30 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       return PAQuery{IRParseError{"vid not found or not a function vid"}};
     }
 
+    if (cmd == "cgpatch") {
+      auto [fromStr, unread2] = eatToken(unread);
+      auto [toStr, unread3] = eatToken(unread2);
+      if (fromStr.empty() || toStr.empty() || unread3.size())
+        return PAQuery{SyntaxError{"cgpatch <from-vid> <to-vid>"}};
+      auto *caller = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(parseVid(fromStr)));
+      auto *callee = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(parseVid(toStr)));
+      if (!caller || !callee)
+        return PAQuery{IRParseError{"vid(s) not found or not function vid(s)"}};
+      if (ptacxx::options::CGPatchPath.empty())
+        return PAQuery{IRParseError{"-cgpatch-path is empty"}};
+      std::ofstream out(ptacxx::options::CGPatchPath, std::ios::app);
+      if (!out)
+        return PAQuery{IRParseError{"cannot open" + ptacxx::options::CGPatchPath}};
+      out << caller->getName().str() << "\n" << callee->getName().str() << "\n\n";
+      return PAQuery{IRParseMessage{"ok"}};
+    }
+
+    if (cmd == "cgreload") {
+      if (!unread.empty())
+        return PAQuery{SyntaxError{"cgreload"}};
+      return PAQuery{CGReloadIn{}};
+    }
+
     if (cmd == "detail") {
       if (!unread.empty()) return PAQuery{SyntaxError{"too many arguments"}};
       detailed = !detailed;
@@ -349,7 +400,10 @@ std::string responseToString(const PAResponse &response, IRManager &irm) {
         }
         if (!ignoreCS) {
           os << " BY ";
-          irm.printValue(os, edge.callsite, IRManager::PRT_VID);
+          if (edge.callsite)
+            irm.printValue(os, edge.callsite, IRManager::PRT_VID);
+          else
+            os << "-";
         }
         os << "\n";
       };

@@ -63,6 +63,7 @@ private:
 CCLyzerQueryServer::~CCLyzerQueryServer() = default;
 
 int main(int argc, char **argv) {
+  ptacxx::options::CGPatchCLIntercept().go(argc, argv);
   InitLLVM X(argc, argv);
   cl::ParseCommandLineOptions(argc, argv, "cclyzer++ pointer analysis\n");
 

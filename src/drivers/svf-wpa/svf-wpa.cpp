@@ -80,18 +80,6 @@ private:
     return true;
   }
 
-  llvm::SmallVector<ptacxx::CallGraph::ResolvedTarget, 4> indirectCallResolver(llvm::CallBase *callInst) {
-    llvm::SmallVector<ptacxx::CallGraph::ResolvedTarget, 4> targets;
-    llvm::Value *calledValue = callInst->getCalledOperand();
-    assert(calledValue);
-    PointsToSet pts;
-    if (!getPointsToSet(calledValue, pts)) return targets;
-    for (auto ptr : pts) {
-      if (auto func = llvm::dyn_cast<llvm::Function>(ptr))
-        targets.push_back(std::make_pair(ptacxx::CallEdge::DIRECT, func));
-    }
-    return targets;
-  }
   PTAliasResult getAliasResult(Ptr a, Ptr b) override {
     auto it_a = _valueToNode.find(a);
     auto it_b = _valueToNode.find(b);
@@ -110,6 +98,7 @@ private:
 SVFWPAQueryServer::~SVFWPAQueryServer() = default;
 
 int main(int argc, char **argv) {
+  ptacxx::options::CGPatchCLIntercept().go(argc, argv);
   auto moduleNameVec = OptionBase::parseOptions(argc, argv,
       "Whole Program Points-to Analysis", "[options] <input-bitcode>");
   if (moduleNameVec.size() != 1) {

@@ -169,6 +169,7 @@ private:
 FPAQueryServer::~FPAQueryServer() = default;
 
 int main(int argc, char **argv) {
+  ptacxx::options::CGPatchCLIntercept().go(argc, argv);
 InitLLVM X(argc, argv);
   cl::ParseCommandLineOptions(argc, argv, "global analysis\n");
   

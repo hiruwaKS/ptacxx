@@ -137,6 +137,7 @@ private:
 SeadsaQueryServer::~SeadsaQueryServer() = default;
 
 int main(int argc, char **argv) {
+  ptacxx::options::CGPatchCLIntercept().go(argc, argv);
   EnableDebugBuffering = true;
   InitLLVM X2(argc, argv);
   cl::ParseCommandLineOptions(

@@ -23,7 +23,7 @@ struct CallEdge {
   };
   CallEdgeType type;
   llvm::Function *caller;
-  llvm::CallBase *callsite;
+  llvm::CallBase *callsite; // callsite can be nullptr
   llvm::Function *callee; // if CALLANYTHING, callee should be nullptr
 };
 
@@ -55,13 +55,14 @@ private:
   std::vector<CallEdge> _callAnything;
 public:
   using ResolvedTarget = std::pair<CallEdge::CallEdgeType, llvm::Function*>;
-  using IndirectResolver = std::function<llvm::SmallVector<ResolvedTarget, 4>(llvm::CallBase*)>;
+  using IndirectResolver = std::function<llvm::SmallVector<ResolvedTarget, 4>(llvm::CallBase *, llvm::Function *)>;
   /// @note ArrayRef is valid since vector (after built) is frozen
   using EdgesResult = llvm::ArrayRef<CallEdge>;
   CallGraph(IRManager &irm): _irm(irm) {}
   CallGraph(const CallGraph&) = delete;
   CallGraph& operator=(const CallGraph&) = delete;
   void buildCG(IndirectResolver indirectResolver);
+  void rebuild();
 
   /// @brief reverse call graph will not be built until buildReverseCG is called
   void buildReverseCG();

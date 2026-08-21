@@ -75,7 +75,7 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
           if (Inserted.second) {
             _vidToIdStructCache[vidCnt] = ST;
             auto name = ST->getName().str();
-            _globalStringToIdxCache.push_back( { name, vidCnt} );
+            _globalStringToIdxCache.push_back( {name, vidCnt, true} );
             std::string striped;
             if (name.starts_with("struct.")) striped = name.substr(7);
             else if (name.starts_with("class.")) striped = name.substr(6);
@@ -83,7 +83,7 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
             else if (name.starts_with("enum.")) striped = name.substr(5);
             while (true) {
               if (striped != name) 
-                _globalStringToIdxCache.push_back( {striped, vidCnt} );
+                _globalStringToIdxCache.push_back( {striped, vidCnt, false} );
               auto [ns, remain] = getNamespacePair(striped);
               if (ns == "") break;
               striped = remain;
@@ -105,12 +105,12 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
     _vidToValueCache[vidCnt] = &GV;
     _valueToVidCache[&GV] = vidCnt;
     auto mangledName = GV.getName().str();
-    _globalStringToIdxCache.push_back( {mangledName, vidCnt} );
+    _globalStringToIdxCache.push_back( {mangledName, vidCnt, true} );
     {
       auto demangled = getDemangledName(mangledName);
       while (true) {
         if (demangled != mangledName) 
-          _globalStringToIdxCache.push_back( {demangled, vidCnt} );
+          _globalStringToIdxCache.push_back( {demangled, vidCnt, false} );
         auto [ns, remain] = getNamespacePair(demangled);
         if (ns == "") break;
         demangled = remain;
@@ -131,12 +131,12 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
     _vidToValueCache[vidCnt] = &F;
     _valueToVidCache[&F] = vidCnt;
     auto mangledName = F.getName().str();
-    _globalStringToIdxCache.push_back( {mangledName, vidCnt} );
+    _globalStringToIdxCache.push_back( {mangledName, vidCnt, true} );
     {
       auto demangled = getDemangledName(mangledName);
       while (true) {
         if (demangled != mangledName) 
-          _globalStringToIdxCache.push_back( {demangled, vidCnt} );
+          _globalStringToIdxCache.push_back( {demangled, vidCnt, false} );
         auto [ns, remain] = getNamespacePair(demangled);
         if (ns == "") break;
         demangled = remain;
@@ -241,6 +241,32 @@ llvm::ArrayRef<GlobalEntry> IRManager::listGlobal(const std::string &prefix) con
   auto end = std::lower_bound(_globalStringToIdxCache.begin(), _globalStringToIdxCache.end(), 
     GlobalEntry{prefix + char(255), 0});
   return llvm::ArrayRef<GlobalEntry>(&*begin, static_cast<size_t>(std::distance(begin, end)));
+}
+
+GlobalEntry IRManager::getGlobal(const std::string &name) const {
+  std::string realName = name;
+  auto begin = std::lower_bound(_globalStringToIdxCache.begin(), _globalStringToIdxCache.end(),
+    GlobalEntry{name, 0});
+  auto end = std::lower_bound(_globalStringToIdxCache.begin(), _globalStringToIdxCache.end(),
+    GlobalEntry{name + char(255), 0});
+  GlobalEntry match{};
+  bool matched = false;
+  for (auto it = begin; it != end; ++it) {
+    const GlobalEntry &entry = *it;
+    if (!entry.isRealName || entry.name != name)
+      continue;
+    if (llvm::Value *value = vidToValue(entry.id)) {
+      if (matched) {
+        throw std::runtime_error("getValueFromString: ambiguous: " + name);
+      } else {
+        match = entry;
+        matched = true;
+      }
+    }
+  }
+  if (!matched)
+    throw std::runtime_error("getValueFromString: not found: " + name);
+  return match;
 }
 
 llvm::raw_ostream &printLinesFromFile(llvm::raw_ostream &os, const std::string &path, 

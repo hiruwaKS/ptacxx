@@ -82,6 +82,7 @@ private:
 SparrowAAQueryServer::~SparrowAAQueryServer() = default;
 
 int main(int argc, char **argv) {
+  ptacxx::options::CGPatchCLIntercept().go(argc, argv);
   InitLLVM X(argc, argv);
   cl::HideUnrelatedOptions({&SparrowAACategory, &AndersenCategory});
   cl::ParseCommandLineOptions(

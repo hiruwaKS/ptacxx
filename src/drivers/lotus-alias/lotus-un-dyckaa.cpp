@@ -93,6 +93,7 @@ private:
 DyckAAQueryServer::~DyckAAQueryServer() = default;
 
 int main(int argc, char **argv) {
+  ptacxx::options::CGPatchCLIntercept().go(argc, argv);
   InitLLVM X(argc, argv);
   cl::ParseCommandLineOptions(argc, argv, "DyckAA Pointer Analysis Tool\n");
   auto irm = IRManager();

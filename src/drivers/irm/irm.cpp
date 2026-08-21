@@ -34,6 +34,7 @@ private:
 IRMQueryServer::~IRMQueryServer() = default;
 
 int main(int argc, char *argv[]) {
+  ptacxx::options::CGPatchCLIntercept().go(argc, argv);
   llvm::cl::ParseCommandLineOptions(argc, argv);
   IRManager irm;
   if (!IRPath.empty())

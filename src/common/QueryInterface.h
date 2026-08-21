@@ -7,6 +7,8 @@
 #include <llvm/Analysis/AliasAnalysis.h>
 #include <llvm/IR/Value.h>
 #include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/DenseMap.h>
+#include <llvm/ADT/SmallVector.h>
 
 #include <variant>
 #include <string>
@@ -16,12 +18,15 @@
 #include <tuple>
 #include <cstring>
 
+/// QueryInterface.h are the interface part of PAWrapper, it wrapped some details like parsing
+
 using Ptr = llvm::Value *;
 using AllocSite = llvm::Value *;
 using PointsToSet = llvm::SmallVector<AllocSite, 4>;
 using PointsToSetView = std::optional<llvm::ArrayRef<AllocSite>>;
 using AliasPair = std::pair<llvm::Value *, llvm::Value *>;
 using PTAliasResult = llvm::AliasResult;
+using CGPatchMap = llvm::DenseMap<llvm::Function *, llvm::SmallVector<llvm::Function *, 4>>;
 using CallTreeMap = llvm::DenseMap<llvm::Function *, llvm::SmallPtrSet<llvm::Function*, 16>>;
 using CallTree = std::pair<llvm::Function *, CallTreeMap>;
 
@@ -46,6 +51,7 @@ struct ReachableIn { llvm::Function *from; llvm::Function *to; bool ignoreUnknow
 struct CallOutEdgesIn { llvm::Function *f; bool ignoreCS; };
 struct CallInEdgesIn { llvm::Function *f; bool ignoreCS; };
 struct CallGraphIn { llvm::Function *f; unsigned maxDepth; bool stdSilence; bool llvmSilence; };
+struct CGReloadIn {};
 struct AllocSitesIn { llvm::Function *f; };
 struct AllAllocSitesIn {};
 struct CrashTestIn {};
@@ -57,7 +63,8 @@ struct AnalyzerError   { std::string message; };
 using PAQuery = std::variant<
   SyntaxError,
   IRParseMessage, IRParseError, 
-  AliasIn, AliasSetIn, PtsIn, PtIn, ReachableIn, CallOutEdgesIn, CallInEdgesIn, CallGraphIn, AllocSitesIn, AllAllocSitesIn, CrashTestIn>;
+  AliasIn, AliasSetIn, PtsIn, PtIn, ReachableIn, CallOutEdgesIn, CallInEdgesIn, CallGraphIn,
+  CGReloadIn, AllocSitesIn, AllAllocSitesIn, CrashTestIn>;
 
 struct AliasOut     { PTAliasResult result; };
 struct PtsOut       { PointsToSetView targets; };
@@ -76,5 +83,6 @@ using PAResponse = std::variant<
 
 PAQuery parse(const std::string &input, IRManager &irm);
 std::string responseToString(const PAResponse &response, IRManager &irm);
+void loadCGPatch(IRManager &irm, CGPatchMap &out);
 
 bool shouldSilence(const std::string& mangledName);

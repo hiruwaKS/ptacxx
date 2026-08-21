@@ -1,5 +1,6 @@
 #pragma once
 
+#include "CommandLine.h"
 #include "QueryInterface.h"
 #include "CallGraph.h"
 #include "MemoryBuiltins.h"
@@ -9,8 +10,16 @@
 #include <llvm/IR/Value.h>
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/SmallVector.h>
 
 #include <optional>
+
+namespace ptacxx::options {
+class CGPatchCLIntercept : public CLIntercept {
+private:
+  bool interceptOption(const std::string &key, const std::string &value) override;
+};
+} // namespace ptacxx::options
 
 // TODO: context-sensitivity support
 
@@ -23,10 +32,12 @@ private:
   std::vector<AllocationSite> _allocationSites;
   llvm::DenseMap<Ptr, std::optional<PointsToSet>> _ptsCache;
   llvm::DenseMap<AliasPair, PTAliasResult> _aliasCache;
+  llvm::DenseMap<llvm::Function *, llvm::SmallVector<llvm::Function *, 4>> _cgPatchOut;
 
   ptacxx::CallGraph _cg;
+  bool _cgPatchLoaded;
 public:
-  PAWrapper(IRManager &irm) : _irm(irm), _cg(irm) {}
+  PAWrapper(IRManager &irm) : _irm(irm), _cg(irm), _cgPatchLoaded(false) {}
   virtual ~PAWrapper();
 
   int run();
@@ -39,6 +50,8 @@ protected:
 
   PointsToSetView getPointsToSetCached(Ptr ptr);
   PTAliasResult getAliasResultCached(Ptr a, Ptr b);
+  virtual llvm::SmallVector<ptacxx::CallGraph::ResolvedTarget, 4>
+    indirectCallResolver(llvm::CallBase *callInst, llvm::Function *caller);
 
   void computeAllocationSites();
   llvm::ArrayRef<AllocationSite> getAllocationSites() const;
@@ -49,8 +62,6 @@ private:
   virtual PTAliasResult getAliasResult(Ptr a, Ptr b) = 0;
 
   std::string handleQueryWrapper(const std::string &req);
-
-  llvm::SmallVector<ptacxx::CallGraph::ResolvedTarget, 4> indirectCallResolver(llvm::CallBase *callInst);
 };
 
 class IncluPAWrapper: public PAWrapper {

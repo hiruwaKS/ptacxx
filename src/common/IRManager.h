@@ -24,6 +24,7 @@
 #include <unordered_map>
 #include <cstdint>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 struct IRStat {
@@ -40,9 +41,12 @@ struct GlobalEntry {
   /// mangled or demangled name
   std::string name;
   VId id;
+  /// true for the original IR name, e.g. F.getName()/GV.getName()/struct getName()
+  bool isRealName = false;
   bool operator<(const GlobalEntry &rhs) const {
     if (name != rhs.name) return name < rhs.name;
-    return id < rhs.id;
+    if (id != rhs.id) return id < rhs.id;
+    return !isRealName && rhs.isRealName;
   }
 };
 
@@ -107,6 +111,9 @@ public:
   }
 
   llvm::ArrayRef<GlobalEntry> listGlobal(const std::string &prefix) const;
+
+  /// @throw if the name is not found or maps to multiple values
+  GlobalEntry getGlobal(const std::string &name) const;
 
   /// @note if debugInfo is printed, the result will be multi-line
   /// @warning debugInfo may be costly, don't call it in every query
