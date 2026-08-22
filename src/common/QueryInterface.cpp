@@ -2,8 +2,10 @@
 #include "LLVMUtils.h"
 
 #include <llvm/ADT/DenseSet.h>
+#include <llvm/IR/GlobalValue.h>
 #include <llvm/Support/raw_ostream.h>
 
+#include <filesystem>
 #include <fstream>
 #include <type_traits>
 
@@ -11,6 +13,8 @@ LLVM_CL_IGNORE_WARNINGS_BEGIN
 namespace ptacxx::options {
 extern std::string CGPatchPath;
 std::string CGPatchPath;
+extern std::string NoteFolderPath;
+std::string NoteFolderPath;
 }
 LLVM_CL_IGNORE_WARNINGS_END
 
@@ -82,27 +86,28 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       if (!unread.empty()) return PAQuery{SyntaxError{"too many arguments"}};
       return PAQuery{IRParseMessage{
           "commands:\n"
-          "  stat | s              show IR metadata and statistics\n"
-          "  list | l [prefix]     list globals (including functions) or identified struct types, to see its vid, demangled prefix allowed\n"
-          "  site [vid]            list allocation sites of a function or all\n"
-          "  debug | d <vid> [n=1] print detailed value debug info, to locate and debug; n = number of subsequent neighbors to show\n"
-          "  st <vid>              print struct type debug info\n"
-          "  cg <vid> [n=5]        print call graph of a function; integer n: max depth\n"
-          "  alias | a <vid> <vid> get alias result\n"
-          "  aliasset <vid>        get alias set of a pointer (TODO)\n"
-          "  pt <vid> <vid>        get points-to result\n"
-          "  pts <vid>             get points-to set of a pointer\n"
-          "  reach <vid> <vid> <i> get call-graph reachability; flag i: ignore unknown call\n"
-          "  callout <vid> <i>     get outgoing calls of a function; flag i: ignore callsites, print a callee set\n"
-          "  callin <vid> <i>      get incoming calls of a function; flag i: ignore callsites, print a caller set\n"
-          "  cgpatch <vid> <vid>   append a call graph patch edge to CGPatch file\n"
-          "  cgreload              rebuild call graph\n"
-          "  detail                toggle vid printing mode\n"
-          "  stds                  toggle whether to silence std:: globals\n"
-          "  llvms                 toggle whether to silence llvm:: globals\n"
-          "  rts                   toggle whether to silence runtime globals\n"
-          "  crash                 run crash test (exercise all pointers) (TODO)\n"
-          "  help | h              show help\n"
+          "  stat | s                  show IR metadata and statistics\n"
+          "  list | l [prefix]         list globals (including functions) or identified struct types, to see its vid, demangled prefix allowed\n"
+          "  site [vid]                list allocation sites of a function or all\n"
+          "  debug | d <vid> [n=1]     print detailed value debug info, to locate and debug; n = number of subsequent neighbors to show\n"
+          "  st <vid>                  print struct type debug info\n"
+          "  note <vid> [note/-d/-f]   view/append/delete a note; -f prints note file location\n"
+          "  cg <vid> [n=5]            print call graph of a function; integer n: max depth\n"
+          "  alias | a <vid> <vid>     get alias result\n"
+          "  aliasset <vid>            get alias set of a pointer (TODO)\n"
+          "  pt <vid> <vid>            get points-to result\n"
+          "  pts <vid>                 get points-to set of a pointer\n"
+          "  reach <vid> <vid> <i>     get call-graph reachability; flag i: ignore unknown call\n"
+          "  callout <vid> <i>         get outgoing calls of a function; flag i: ignore callsites, print a callee set\n"
+          "  callin <vid> <i>          get incoming calls of a function; flag i: ignore callsites, print a caller set\n"
+          "  cgpatch <vid> <vid>       append a call graph patch edge to CGPatch file\n"
+          "  cgreload                  rebuild call graph\n"
+          "  detail                    toggle vid printing mode\n"
+          "  stds                      toggle whether to silence std:: globals\n"
+          "  llvms                     toggle whether to silence llvm:: globals\n"
+          "  rts                       toggle whether to silence runtime globals\n"
+          "  crash                     run crash test (exercise all pointers) (TODO)\n"
+          "  help | h                  show help\n"
           "notes:\n"
           "  prefix in func/global can be a demangled name, which contains ' ' '(' ')' chars sometimes\n"
         }};
@@ -266,6 +271,8 @@ PAQuery parse(const std::string &input, IRManager &irm) {
     }
 
     if (cmd == "cgpatch") {
+      if (ptacxx::options::CGPatchPath.empty())
+        return PAQuery{IRParseError{"-cgpatch-path is empty"}};
       auto [fromStr, unread2] = eatToken(unread);
       auto [toStr, unread3] = eatToken(unread2);
       if (fromStr.empty() || toStr.empty() || unread3.size())
@@ -274,8 +281,6 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       auto *callee = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(parseVid(toStr)));
       if (!caller || !callee)
         return PAQuery{IRParseError{"vid(s) not found or not function vid(s)"}};
-      if (ptacxx::options::CGPatchPath.empty())
-        return PAQuery{IRParseError{"-cgpatch-path is empty"}};
       std::ofstream out(ptacxx::options::CGPatchPath, std::ios::app);
       if (!out)
         return PAQuery{IRParseError{"cannot open" + ptacxx::options::CGPatchPath}};
@@ -316,6 +321,151 @@ PAQuery parse(const std::string &input, IRManager &irm) {
     if (cmd == "crash") {
       if (!unread.empty()) return PAQuery{SyntaxError{"too many arguments"}};
       return PAQuery{CrashTestIn{}};
+    }
+
+    if (cmd == "note") {
+      // suppose note file is ordered by llvm name ascending
+      if (ptacxx::options::NoteFolderPath.empty())
+        return PAQuery{IRParseError{"--note-folder is empty"}};
+      auto [vidStr, unread2] = eatToken(unread);
+      if (vidStr.empty())
+        return PAQuery{SyntaxError{"note <vid> [note|-d|-f]"}};
+      const VId vid = parseVid(vidStr);
+      const std::string noteText = stripPrefix(unread2);
+
+      llvm::Value *V = irm.vidToValue(vid);
+      llvm::StructType *ST = V ? nullptr : irm.vidToIdStruct(vid);
+      if (!ST && !V) return PAQuery{IRParseError{"vid not found"}};
+
+      std::string heading;
+      DebugFileInfo info;
+      if (ST) {
+        heading = ST->getName().str();
+        if (heading.size() && heading[0] == '%') heading = heading.substr(1);
+        info = irm.getDebugInfoFile(ST);
+      } else {
+        if (!llvm::isa<llvm::GlobalValue>(V))
+          return PAQuery{IRParseError{"local values are not allowed for notes"}};
+        heading = V->getName().str();
+        if (heading.size() && heading[0] == '@') heading = heading.substr(1);
+        info = irm.getDebugInfoFile(V);
+      }
+      if (!info.valid()) return PAQuery{IRParseError{"no debug info"}};
+
+      enum NoteMode {
+        MODE_FINDFILE,
+        MODE_FIND,
+        MODE_APPEND,
+        MODE_DELETE
+      };
+      NoteMode mode;
+      if (noteText == "-f") mode = MODE_FINDFILE;
+      else if (noteText.empty()) mode = MODE_FIND;
+      else if (noteText == "-d") mode = MODE_DELETE;
+      else mode = MODE_APPEND;
+
+      std::error_code ec;
+      std::filesystem::create_directories(ptacxx::options::NoteFolderPath, ec);
+      if (ec) return PAQuery{IRParseError{"cannot create note folder: " + ec.message()}};
+
+      const std::string sourceName = std::filesystem::path(info.path).filename().string();
+
+      std::string path;
+      std::ifstream in;
+      for (unsigned i = 1;; ++i) {
+        std::string noteName = sourceName + ".md";
+        if (i > 1) noteName = sourceName + "." + std::to_string(i) + ".md";
+        path = ptacxx::options::NoteFolderPath + "/" + noteName;
+
+        in.open(path);
+        if (!in) break;
+        std::string firstLine;
+        if (std::getline(in, firstLine) && firstLine == info.path) break;
+        in.close();
+      }
+
+      const bool copyWhileFinding = mode == MODE_APPEND || mode == MODE_DELETE;
+      std::string outBuffer;
+      llvm::raw_string_ostream out(outBuffer);
+      if (copyWhileFinding)
+        out << info.path << "\n";
+
+      std::string line;
+      bool found = false;
+      bool pendingLine = false;
+      unsigned lineno = in ? 2 : 1;
+      while ((pendingLine = static_cast<bool>(std::getline(in, line)))) {
+        if (line.starts_with("## ")) {
+          const auto noteHeading = line.substr(3);
+          if (noteHeading == heading) found = true;
+          if (noteHeading > heading) break;
+        }
+        if (found) {
+          break;
+        } else {
+          ++lineno;
+          if (copyWhileFinding) out << line << "\n";
+        }
+      }
+
+      if (mode != MODE_APPEND && !found) {
+        return PAQuery{IRParseError{"note not found"}};
+      }
+
+      auto commitNote = [&]() -> PAQuery {
+        out.flush();
+        in.close();
+        std::ofstream file(path);
+        if (!file) return PAQuery{IRParseError{"cannot write " + path}};
+        file << outBuffer;
+        file.close();
+        if (!file) return PAQuery{IRParseError{"cannot write " + path}};
+        return PAQuery{IRParseMessage{"ok"}};
+      };
+
+      switch (mode) {
+      case MODE_FINDFILE:
+        return PAQuery{IRParseMessage{path+":"+std::to_string(lineno)}};
+
+      case MODE_FIND: {
+        std::string note;
+        while ((pendingLine = static_cast<bool>(std::getline(in, line)))) { // omit a line
+          if (line.starts_with("## ")) break;
+          note += line;
+          note += "\n";
+        }
+        if (note.empty()) return PAQuery{IRParseError{"(empty)"}};
+        return PAQuery{IRParseMessage{note}};
+      }
+
+      case MODE_APPEND: {
+        if (!found) {
+          out << "## " << heading << "\n";
+          out << noteText << "\n";
+        } else {
+          if (pendingLine) out << line << "\n";
+          while ((pendingLine = static_cast<bool>(std::getline(in, line)))) {
+            if (line.starts_with("## ")) break;
+            out << line << "\n";
+          }
+          out << noteText << "\n";
+        }
+        if (pendingLine) {
+          out << line << "\n";
+          while ((pendingLine = static_cast<bool>(std::getline(in, line)))) out << line << "\n";
+        }
+        return commitNote();
+      }
+      case MODE_DELETE:
+        while ((pendingLine = static_cast<bool>(std::getline(in, line)))) { // omit a line
+          if (line.starts_with("## ")) break;
+        }
+        if (pendingLine) {
+          out << line << "\n";
+          while ((pendingLine = static_cast<bool>(std::getline(in, line)))) out << line << "\n";
+        }
+        return commitNote();
+      }
     }
 
     return PAQuery{SyntaxError{"unknown command " + cmd}};

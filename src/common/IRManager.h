@@ -37,6 +37,15 @@ struct IRStat {
   bool hasMain; bool hasGlobalCtor; bool hasGlobalDtor;
 };
 
+struct DebugFileInfo {
+  std::string path;
+  unsigned lineStart = 0;
+  unsigned lineEnd = 0;
+  unsigned columnStart = 0;
+  unsigned columnEnd = 0;
+  bool valid() const { return !path.empty() && lineStart != 0; }
+};
+
 struct GlobalEntry {
   /// mangled or demangled name
   std::string name;
@@ -115,6 +124,8 @@ public:
   /// @throw if the name is not found or maps to multiple values
   GlobalEntry getGlobal(const std::string &name) const;
 
+  DebugFileInfo getDebugInfoFile(llvm::Value *V) const;
+  DebugFileInfo getDebugInfoFile(llvm::StructType *ST) const;
   /// @note if debugInfo is printed, the result will be multi-line
   /// @warning debugInfo may be costly, don't call it in every query
   llvm::raw_ostream &printValue(llvm::raw_ostream &os, llvm::Value *V, PrintLevel pl) const;

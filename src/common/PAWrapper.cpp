@@ -12,10 +12,15 @@
 namespace ptacxx::options {
 /// @note this will gather all options that used in PAWrapper, defined dispersedly
 extern std::string CGPatchPath;
+extern std::string NoteFolderPath;
 bool CGPatchCLIntercept::interceptOption(const std::string &key,
                                          const std::string &value) {
   if (key == "cgpatch-path") {
     CGPatchPath = value;
+    return true;
+  }
+  if (key == "note-folder") {
+    NoteFolderPath = value;
     return true;
   }
   return false;

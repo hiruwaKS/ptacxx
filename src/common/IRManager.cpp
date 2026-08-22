@@ -22,6 +22,11 @@
 /// print lines from a file, [start, end]
 llvm::raw_ostream &printLinesFromFile(llvm::raw_ostream &os, const std::string &path, unsigned start, unsigned end);
 
+static std::string debugFilePath(const llvm::DIFile *File) {
+  assert(File);
+  return (File->getDirectory() + "/" + File->getFilename()).str();
+}
+
 void IRManager::addMainModule(const std::string &irPath) {
   if (irPath.empty())
     throw std::runtime_error("IRManager: irPath is empty");
@@ -235,6 +240,83 @@ const llvm::Function * IRManager::parentFunction(const llvm::Value *V) {
   return nullptr;
 }
 
+DebugFileInfo IRManager::getDebugInfoFile(llvm::Value *V) const {
+  DebugFileInfo info;
+  if (!V) return info;
+  if (auto *I = llvm::dyn_cast<llvm::Instruction>(V)) {
+    if (auto DL = I->getDebugLoc()) {
+      if (auto *Scope = DL.getScope()) {
+        if (auto *DIL = llvm::dyn_cast<llvm::DILocation>(Scope))
+          info.path = debugFilePath(DIL->getFile());
+        else if (auto *DIS = llvm::dyn_cast<llvm::DIScope>(Scope))
+          info.path = debugFilePath(DIS->getFile());
+      }
+      info.lineStart = info.lineEnd = DL.getLine();
+      info.columnStart = info.columnEnd = DL.getCol();
+    }
+  } else if (auto *F = llvm::dyn_cast<llvm::Function>(V)) {
+    if (auto *SP = F->getSubprogram()) {
+      info.path = debugFilePath(SP->getFile());
+      info.lineStart = info.lineEnd = SP->getLine();
+      for (auto &BB : *F) {
+        for (auto &Inst : BB) {
+          if (auto DL = Inst.getDebugLoc()) {
+            unsigned instLine = DL.getLine();
+            if (instLine > info.lineEnd) info.lineEnd = instLine;
+          }
+        }
+      }
+    }
+  } else if (auto *GV = llvm::dyn_cast<llvm::GlobalVariable>(V)) {
+    llvm::SmallVector<llvm::DIGlobalVariableExpression *, 4> GVs;
+    GV->getDebugInfo(GVs);
+    for (auto *GVExpr : GVs) {
+      if (!GVExpr) continue;
+      auto *DIGV = GVExpr->getVariable();
+      if (!DIGV) continue;
+      info.path = debugFilePath(DIGV->getFile());
+      info.lineStart = info.lineEnd = DIGV->getLine();
+      if (!info.path.empty()) break;
+    }
+  }
+  return info;
+}
+
+DebugFileInfo IRManager::getDebugInfoFile(llvm::StructType *ST) const {
+  DebugFileInfo info;
+  if (!ST || !ST->hasName()) return info;
+
+  std::string StructTyName = ST->getName().str();
+  std::string CleanName = StructTyName;
+  for (llvm::StringRef prefix : {"struct.", "class.", "union.", "enum."}) {
+    if (CleanName.find(prefix) == 0) {
+      CleanName = CleanName.substr(prefix.size());
+      break;
+    }
+  }
+  size_t dotPos = CleanName.find_last_of('.');
+  if (dotPos != std::string::npos) CleanName = CleanName.substr(0, dotPos);
+  std::string ClassNameOnly = getAllNamespaceStripped(CleanName);
+  if (ClassNameOnly.empty()) return info;
+
+  for (const llvm::Function &F : _module->functions()) {
+    auto *SP = F.getSubprogram();
+    if (!SP) continue;
+    auto *CT = llvm::dyn_cast<llvm::DICompositeType>(SP->getScope());
+    if (!CT || CT->getName().str() != ClassNameOnly) continue;
+
+    info.path = debugFilePath(CT->getFile());
+    info.lineStart = info.lineEnd = CT->getLine();
+    for (auto *Element : CT->getElements()) {
+      if (auto *DIE = llvm::dyn_cast<llvm::DIDerivedType>(Element))
+        if (DIE->getLine() > info.lineEnd)
+          info.lineEnd = DIE->getLine();
+    }
+    if (!info.path.empty()) break;
+  }
+  return info;
+}
+
 llvm::ArrayRef<GlobalEntry> IRManager::listGlobal(const std::string &prefix) const {
   auto begin = std::lower_bound(_globalStringToIdxCache.begin(), _globalStringToIdxCache.end(), 
     GlobalEntry{prefix, 0});
@@ -369,65 +451,25 @@ llvm::raw_ostream &IRManager::printValue(llvm::raw_ostream &os, llvm::Value *V, 
           printValue(os << "  ", User, PrintLevel::PRT_DETAILED) << "\n";
       }
     }
-    unsigned lineStart = 1, lineEnd = 0, colStart = 1, colEnd = 0;
-    std::string path = "";
-    if (auto *I = llvm::dyn_cast<llvm::Instruction>(V)) {
-      if (auto DL = I->getDebugLoc()) {
-        unsigned Line = DL.getLine();
-        unsigned Col = DL.getCol();
-        lineStart = lineEnd = Line;
-        colStart = colEnd = Col;
-        if (auto *Scope = DL.getScope()) {
-          if (auto *DIL = dyn_cast<llvm::DILocation>(Scope)) {
-            if (auto *File = DIL->getFile()) {
-              path = (File->getDirectory() + "/" + File->getFilename()).str();
-            }
-          } else if (auto *DIS = dyn_cast<llvm::DIScope>(Scope)) {
-            if (auto *File = DIS->getFile()) {
-              path = (File->getDirectory() + "/" + File->getFilename()).str();
-            }
-          }
-        }
-      }
-    }
-    else if (auto *F = llvm::dyn_cast<llvm::Function>(V)) {
-      if (auto *SP = F->getSubprogram()) {
+    DebugFileInfo info = getDebugInfoFile(V);
+    if (auto *F = llvm::dyn_cast<llvm::Function>(V)) {
+      if (auto *SP = F->getSubprogram())
         os << "Defined: " << (SP->isDefinition() ? "true" : "false") << "\n";
-        lineStart = SP->getLine();
-        lineEnd = lineStart;
-        for (auto &BB : *F) {
-          for (auto &Inst : BB) {
-            if (auto DL = Inst.getDebugLoc()) {
-              unsigned instLine = DL.getLine();
-              if (instLine > lineEnd) lineEnd = instLine;
-            }
-          }
-        }
-        if (auto *File = SP->getFile())
-          path = (File->getDirectory() + "/" + File->getFilename()).str();
-      }
     }
-    else if (auto *Arg = llvm::dyn_cast<llvm::Argument>(V)) {
-      // no debug info for arguments
-    }
-    else if (auto *GV = llvm::dyn_cast<llvm::GlobalVariable>(V)) {
+    if (auto *GV = llvm::dyn_cast<llvm::GlobalVariable>(V)) {
       llvm::SmallVector<llvm::DIGlobalVariableExpression *, 4> GVs;
       GV->getDebugInfo(GVs);
       for (auto *GVExpr : GVs) {
-        if (auto *DIGV = GVExpr->getVariable()) {
-          unsigned line = DIGV->getLine();
-          lineStart = lineEnd = line;
-          if (auto *File = DIGV->getFile())
-            path = (File->getDirectory() + "/" + File->getFilename()).str();
+        if (auto *DIGV = GVExpr->getVariable())
           if (!DIGV->getLinkageName().empty()) os << DIGV->getLinkageName() << "\n";
-        }
       }
     }
-    if (!path.empty() && lineEnd >= lineStart) {
-      os << "<src LINE " <<  lineStart << ":" << lineEnd;
-      if (colEnd >= colStart) os << " COL" << colStart << ":" << colEnd;
-      os << " in " << path << ">\n";
-      printLinesFromFile(os, path, lineStart, lineEnd);
+    if (info.valid()) {
+      os << "<src LINE " << info.lineStart << ":" << info.lineEnd;
+      if (info.columnEnd >= info.columnStart && info.columnEnd != 0)
+        os << " COL" << info.columnStart << ":" << info.columnEnd;
+      os << " in " << info.path << ">\n";
+      printLinesFromFile(os, info.path, info.lineStart, info.lineEnd);
       os << "</src>\n";
     }
   }
@@ -443,50 +485,13 @@ llvm::raw_ostream &IRManager::printIdStructType(llvm::raw_ostream &os, llvm::Str
   ST->print(os);
   os << "\n";
 
-  std::string StructTyName = ST->getName().str();
-  std::string CleanName = StructTyName;
-  for (llvm::StringRef prefix : {"struct.", "class.", "union.", "enum."}) {
-    if (CleanName.find(prefix) == 0) {
-      CleanName = CleanName.substr(prefix.size());
-      break;
-    }
+  DebugFileInfo info = getDebugInfoFile(ST);
+  if (info.valid()) {
+    os << "<src LINE " << info.lineStart << ":" << info.lineEnd
+       << " in " << info.path << ">\n";
+    printLinesFromFile(os, info.path, info.lineStart, info.lineEnd);
+    os << "</src>\n";
   }
-  size_t dotPos = CleanName.find_last_of('.');
-  if (dotPos != std::string::npos) CleanName = CleanName.substr(0, dotPos);
-  std::string ClassNameOnly = getAllNamespaceStripped(CleanName);
-
-  for (const llvm::Function &F : _module->functions()) {
-    if (auto *SP = F.getSubprogram()) {
-      if (auto *CT = llvm::dyn_cast<llvm::DICompositeType>(SP->getScope())) {
-        std::string DITypeName = CT->getName().str();
-        if (!DITypeName.empty() && ClassNameOnly == DITypeName) {
-          unsigned lineStart = CT->getLine();
-          unsigned lineEnd = lineStart;
-
-          llvm::DINodeArray Elements = CT->getElements();
-          for (auto *Element : Elements) {
-            if (auto *DIE = llvm::dyn_cast<llvm::DIDerivedType>(Element)) {
-              if (DIE->getLine() > lineEnd)
-                lineEnd = DIE->getLine();
-            }
-          }
-
-          std::string path;
-          if (auto *File = CT->getFile()) {
-            path = (File->getDirectory() + "/" + File->getFilename()).str();
-          }
-          if (lineStart > 0 && !path.empty()) {
-            os << "<src LINE " << lineStart << ":" << lineEnd
-               << " in " << path << ">\n";
-            printLinesFromFile(os, path, lineStart, lineEnd);
-            os << "</src>\n";
-          }
-          return os;
-        }
-      }
-    }
-  }
-
   return os;
 }
 

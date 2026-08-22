@@ -57,3 +57,7 @@ cmake -B <build_dir> -S . \
       -DCMAKE_C_FLAGS="-g -O0 -flto=thin" \
       -DCMAKE_CXX_FLAGS="-g -O0 -flto=thin"
 ```
+
+## TODOS
+
+- add version control support and make notes shareable
