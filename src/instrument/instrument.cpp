@@ -24,6 +24,10 @@ static cl::opt<std::string>
 static cl::opt<std::string>
     DumpPath("dump", cl::desc("dump file path, can end with .txt"),
            cl::ValueRequired, cl::Required);
+static cl::opt<bool>
+    ModePtr("mode-ptr", cl::desc("use pointer mode"), cl::init(false));
+static cl::opt<bool>
+    ModeBB("mode-bb", cl::desc("use bb mode"), cl::init(false));
 static cl::opt<int>
     KContext("context", cl::desc("K-context sensitivity"), cl::init(0));
 
@@ -66,7 +70,7 @@ int main(int argc, char *argv[]) {
   auto *I32Ty = Type::getInt32Ty(Ctx);
   auto *I64Ty = Type::getInt64Ty(Ctx);
   auto *ISizeTy = Type::getIntNTy(Ctx, sizeof(size_t) * 8);
-  auto *hookInitTy = FunctionType::get(VoidTy, {ISizeTy}, false);
+  auto *hookInitTy = FunctionType::get(VoidTy, {ISizeTy, I64Ty}, false);
   auto *hookPushTy = FunctionType::get(VoidTy, {I32Ty, I16Ty, I64Ty, I64Ty}, false);
   auto *hookDumpTy = FunctionType::get(VoidTy, {I8PtrTy}, false);
   auto *registerGlobalsTy = FunctionType::get(I32Ty, {}, false);
@@ -77,8 +81,6 @@ int main(int argc, char *argv[]) {
   auto *hookPushFn = declFn(M, "__hook_push", hookPushTy);
   auto *hookDumpFn = declFn(M, "__hook_dump", hookDumpTy);
   auto *registerGlobalsFn = declFn(M, "__register_globals", registerGlobalsTy);
-
-  std::vector<Function*> registerGlobalsOthersFn;
 
   // 2.3 traverse all functions with definition
   {
@@ -98,90 +100,98 @@ int main(int argc, char *argv[]) {
       auto &entryBB = F->getEntryBlock();
       for (auto &BB : *F) {
         auto firstPt = BB.getFirstInsertionPt();
-        beforeFirstPt.clear();
-        for (auto &I : BB) {
-          if (&I == &*firstPt) break;
-          beforeFirstPt.push_back(I.getIterator());
-        }
-        if (&BB == &entryBB) {
-          // 2.3.1 begin scope
-          auto fvid = irm.valueToVId(F);
-          CallInst::Create(hookPushFn, {VID(fvid), CONSTI16(PTR_ACTION_BEGINSCOPE), CONSTI64(0), CONSTI64(0)}, 
-            "", LLVM_INS(firstPt));
-          // 2.3.2 args
-          for (auto &arg : F->args()) 
-            if (arg.getType()->isPointerTy())
-              emitPointerProbe(&arg, firstPt);
-        }
-        auto beforePtIt = beforeFirstPt.begin();
-        auto afterPtIt = firstPt;
-        llvm::BasicBlock::iterator it;
-        bool reachFirstPt = false;
-        bool handledLandingPad = false;
-        do {
-          reachFirstPt = reachFirstPt || beforePtIt == beforeFirstPt.end();
-          it = reachFirstPt ? afterPtIt : *beforePtIt;
-          if (it == BB.end()) break;
-          auto &I = *it;
-          if (I.getType()->isPointerTy()) {
-            auto instPos = reachFirstPt ? I.getNextNode()->getIterator() : firstPt;
-            if (isa<AllocaInst>(I)) {
-              // 2.3.3 alloca case (no probe)
-              auto *AI = cast<AllocaInst>(&I);
-              auto allocaid = irm.valueToVId(AI);
-              size_t sizeMultipiler = DL.getTypeStoreSize(AI->getAllocatedType());
-              Value* varMultipiler = nullptr;
-              if (AI->isArrayAllocation()) {
-                if (auto *constSize = dyn_cast<ConstantInt>(AI->getArraySize())) {
-                  sizeMultipiler = static_cast<size_t>(constSize->getSExtValue());
-                } else varMultipiler = AI->getArraySize();
-              }
-              Value *sizeVal;
-              if (varMultipiler) {
-                auto multiplier = ConstantInt::get(I64Ty, sizeMultipiler);
-                sizeVal = BinaryOperator::Create(
-                  Instruction::Mul, multiplier, varMultipiler, "", LLVM_INS(instPos));
+        if (ModePtr) {
+          beforeFirstPt.clear();
+          for (auto &I : BB) {
+            if (&I == &*firstPt) break;
+            beforeFirstPt.push_back(I.getIterator());
+          }
+          if (&BB == &entryBB) {
+            // 2.3.1 begin scope
+            auto fvid = irm.valueToVId(F);
+            CallInst::Create(hookPushFn, {VID(fvid), CONSTI16(PTR_ACTION_BEGINSCOPE), CONSTI64(0), CONSTI64(0)}, 
+              "", LLVM_INS(firstPt));
+            // 2.3.2 args
+            for (auto &arg : F->args()) 
+              if (arg.getType()->isPointerTy())
+                emitPointerProbe(&arg, firstPt);
+          }
+          auto beforePtIt = beforeFirstPt.begin();
+          auto afterPtIt = firstPt;
+          llvm::BasicBlock::iterator it;
+          bool reachFirstPt = false;
+          bool handledLandingPad = false;
+          do {
+            reachFirstPt = reachFirstPt || beforePtIt == beforeFirstPt.end();
+            it = reachFirstPt ? afterPtIt : *beforePtIt;
+            if (it == BB.end()) break;
+            auto &I = *it;
+            if (I.getType()->isPointerTy()) {
+              auto instPos = reachFirstPt ? I.getNextNode()->getIterator() : firstPt;
+              if (isa<AllocaInst>(I)) {
+                // 2.3.3 alloca case (no probe)
+                auto *AI = cast<AllocaInst>(&I);
+                auto allocaid = irm.valueToVId(AI);
+                size_t sizeMultipiler = DL.getTypeStoreSize(AI->getAllocatedType());
+                Value* varMultipiler = nullptr;
+                if (AI->isArrayAllocation()) {
+                  if (auto *constSize = dyn_cast<ConstantInt>(AI->getArraySize())) {
+                    sizeMultipiler = static_cast<size_t>(constSize->getSExtValue());
+                  } else varMultipiler = AI->getArraySize();
+                }
+                Value *sizeVal;
+                if (varMultipiler) {
+                  auto multiplier = ConstantInt::get(I64Ty, sizeMultipiler);
+                  sizeVal = BinaryOperator::Create(
+                    Instruction::Mul, multiplier, varMultipiler, "", LLVM_INS(instPos));
+                } else {
+                  sizeVal = ConstantInt::get(I64Ty, sizeMultipiler);
+                }
+                auto *ptrVal = ensureI64(&I, instPos);
+                CallInst::Create(hookPushFn, {VID(allocaid), CONSTI16(PTR_ACTION_ALLOCA), ptrVal, sizeVal}, 
+                  "", LLVM_INS(instPos));
               } else {
-                sizeVal = ConstantInt::get(I64Ty, sizeMultipiler);
-              }
-              auto *ptrVal = ensureI64(&I, instPos);
-              CallInst::Create(hookPushFn, {VID(allocaid), CONSTI16(PTR_ACTION_ALLOCA), ptrVal, sizeVal}, 
-                "", LLVM_INS(instPos));
-            } else {
-              // 2.3.4 probe case
-              emitPointerProbe(&I, instPos);
-              if (auto *CB = dyn_cast<CallBase>(&I)) {
-                if (CB->isNoBuiltin() || !CB->getCalledFunction()) continue;
-                // 2.3.5 heap alloca case
-                if (auto size = dynMem.getDynamicAllocationSize(CB)) {
-                  auto cbid = irm.valueToVId(CB);
-                  CallInst::Create(hookPushFn, {VID(cbid), CONSTI16(PTR_ACTION_HEAP_ALLOCA), 
-                    ensureI64(CB, instPos), size}, "", LLVM_INS(instPos));
-                } else if (auto freedPtr = dynMem.getFreedOperand(CB)) {
-                  auto cbid = irm.valueToVId(CB);
-                  CallInst::Create(hookPushFn, {VID(cbid), CONSTI16(PTR_ACTION_HEAP_FREE), 
-                    ensureI64(freedPtr, instPos), CONSTI64(0)}, "", LLVM_INS(instPos));
+                // 2.3.4 probe case
+                emitPointerProbe(&I, instPos);
+                if (auto *CB = dyn_cast<CallBase>(&I)) {
+                  if (CB->isNoBuiltin() || !CB->getCalledFunction()) continue;
+                  // 2.3.5 heap alloca case
+                  if (auto size = dynMem.getDynamicAllocationSize(CB)) {
+                    auto cbid = irm.valueToVId(CB);
+                    CallInst::Create(hookPushFn, {VID(cbid), CONSTI16(PTR_ACTION_HEAP_ALLOCA), 
+                      ensureI64(CB, instPos), size}, "", LLVM_INS(instPos));
+                  } else if (auto freedPtr = dynMem.getFreedOperand(CB)) {
+                    auto cbid = irm.valueToVId(CB);
+                    CallInst::Create(hookPushFn, {VID(cbid), CONSTI16(PTR_ACTION_HEAP_FREE), 
+                      ensureI64(freedPtr, instPos), CONSTI64(0)}, "", LLVM_INS(instPos));
+                  }
                 }
               }
             }
-          }
-          // 2.3.6 landing pad case
-          if (!handledLandingPad &&
-              (isa<LandingPadInst>(I) || isa<CatchPadInst>(I) || isa<CleanupPadInst>(I))) {
-            auto fvid = irm.valueToVId(F);
-            CallInst::Create(hookPushFn, {VID(fvid), CONSTI16(PTR_ACTION_LANDING), CONSTI64(0), CONSTI64(0)}, 
-              "", LLVM_INS(firstPt));
-            handledLandingPad = true;
-          }
-          if (!reachFirstPt) { ++beforePtIt; }
-          else ++afterPtIt;
-        } while (true);
+            // 2.3.6 landing pad case
+            if (!handledLandingPad &&
+                (isa<LandingPadInst>(I) || isa<CatchPadInst>(I) || isa<CleanupPadInst>(I))) {
+              auto fvid = irm.valueToVId(F);
+              CallInst::Create(hookPushFn, {VID(fvid), CONSTI16(PTR_ACTION_LANDING), CONSTI64(0), CONSTI64(0)}, 
+                "", LLVM_INS(firstPt));
+              handledLandingPad = true;
+            }
+            if (!reachFirstPt) { ++beforePtIt; }
+            else ++afterPtIt;
+          } while (true);
+        }
+        if (ModeBB) {
+          auto bbid = irm.valueToVId(&BB);
+          const auto &instPos = firstPt;
+          CallInst::Create(hookPushFn, {VID(bbid), CONSTI16(PTR_ACTION_BASICBLOCK), 
+            CONSTI64(0), CONSTI64(0)}, "", LLVM_INS(instPos));
+        }
       }
     }
   }
 
   // 2.4 put globals to registerGlobals
-  {
+  if (ModePtr) {
     auto *entryBB = BasicBlock::Create(Ctx, "", registerGlobalsFn);
     int cnt = 0;
     for (auto *GV : globals) {
@@ -203,9 +213,8 @@ int main(int argc, char *argv[]) {
   // 2.5 wrap main
 
   // int main(int argc, char **argv) {
-  //   __hook_init(K);
-  //   __registerGlobals_0();
-  //   __registerGlobals_...();
+  //   __hook_init(K, mode);
+  //   __registerGlobals();
   //   int result = __orig_main(argc, argv);
   //   __hook_dump(dump_path);
   //   return result;
@@ -217,10 +226,9 @@ int main(int argc, char *argv[]) {
   auto *newMainFn = declFn(M, "main", mainTy);
   auto *entryBB = BasicBlock::Create(Ctx, "", newMainFn);
   auto KCon = ConstantInt::get(ISizeTy, static_cast<uint64_t>(KContext));
-  CallInst::Create(hookInitFn, KCon, "", entryBB);
-  CallInst::Create(registerGlobalsFn, "", entryBB);
-  for (auto registerGlobalsOther: registerGlobalsOthersFn) 
-    CallInst::Create(registerGlobalsOther, "", entryBB);
+  auto Mode = ConstantInt::get(I64Ty, (ModePtr ? MODE_PTR_MASK : 0) | (ModeBB ? MODE_BB_MASK : 0));
+  CallInst::Create(hookInitFn, {KCon, Mode}, "", entryBB);
+  if (ModePtr) CallInst::Create(registerGlobalsFn, "", entryBB);
   llvm::SmallVector<llvm::Value *> origArgs;
   for (auto &arg : newMainFn->args())
     origArgs.push_back(&arg);

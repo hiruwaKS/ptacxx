@@ -23,7 +23,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 RED = "\033[31m"
 RESET = "\033[0m"
-HOST = "127.0.0.1"
+HOST_LOCAL = "127.0.0.1"
+HOST_ALL = "0.0.0.0"
 
 
 class QueryResponseProcess:
@@ -239,6 +240,7 @@ def main():
         description="Run a query-response program behind a single-threaded HTTP server.",
         usage="server.py [--port-start PORT_START] [--port-end PORT_END] --cmd ARG [ARG ...]",
     )
+    parser.add_argument("--lan", action="store_true", help="Enable LAN access (listen on 0.0.0.0 instead of 127.0.0.1).")
     parser.add_argument("--port-start", type=int, default=8000, help="First port in the auto-bind range.")
     parser.add_argument("--port-end", type=int, default=8999, help="Last port in the auto-bind range.")
     parser.add_argument(
@@ -262,7 +264,8 @@ def main():
     httpd = None
     for port in range(args.port_start, args.port_end + 1):
         try:
-            httpd = HTTPServer((HOST, port), handler)
+            host = HOST_ALL if args.lan else HOST_LOCAL
+            httpd = HTTPServer((host, port), handler)
             break
         except OSError:
             continue
@@ -271,7 +274,7 @@ def main():
         process.close()
         parser.exit(1, f"server.py: no free port in {args.port_start}-{args.port_end}\n")
 
-    print(f"http://{HOST}:{httpd.server_address[1]}/", flush=True)
+    print(f"http://{HOST_ALL if args.lan else HOST_LOCAL}:{httpd.server_address[1]}/", flush=True)
 
     console_thread = threading.Thread(target=console_loop, args=(process,), daemon=True)
     console_thread.start()

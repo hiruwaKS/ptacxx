@@ -19,6 +19,9 @@ static constexpr int16_t PTR_ACTION_PROBE       = 8;
 static constexpr int16_t PTR_ACTION_BEGINSCOPE  = 16;
 static constexpr int16_t PTR_ACTION_ENDSCOPE    = 17;
 static constexpr int16_t PTR_ACTION_LANDING     = 18;
+static constexpr int16_t PTR_ACTION_BASICBLOCK  = 19;
+static constexpr uint64_t MODE_PTR_MASK         = 0x1;
+static constexpr uint64_t MODE_BB_MASK          = 0x2;
 
 #include <ctime>
 #include <iostream>

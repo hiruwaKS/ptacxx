@@ -7,6 +7,7 @@ if [ -z "${LLVM_TOOLS_DIR}" ]; then
     echo "Error: LLVM_TOOLS_DIR environment variable is not set!" >&2
     exit 1
 fi
+LLVM_OPT="${LLVM_TOOLS_DIR}/opt"
 LLVM_OBJCOPY="${LLVM_TOOLS_DIR}/llvm-objcopy"
 LLVM_LINK="${LLVM_TOOLS_DIR}/llvm-link"
 LLVM_DIS="${LLVM_TOOLS_DIR}/llvm-dis"
@@ -92,7 +93,12 @@ fi
 
 # 4. Link all Bitcode files into a single .bc
 echo "--> Linking $TOTAL_BC bitcode files..."
-${LLVM_LINK} --only-needed "${BC_FILES[@]}" -o "$OUTPUT_BC_PATH"
+# llvm-link's `--only-needed` is intentionally disabled: it drops some definitions, possibly a bug.
+${LLVM_LINK} "${BC_FILES[@]}" -o "$OUTPUT_BC_PATH"
+echo "--> Optimizing: Removing unreachable functions..."
+${LLVM_OPT} -passes=internalize -internalize-public-api-list=main "$OUTPUT_BC_PATH" -o "${OUTPUT_BC_PATH}.internalized"
+${LLVM_OPT} -passes=globaldce "${OUTPUT_BC_PATH}.internalized" -o "${OUTPUT_BC_PATH}.global"
+mv "${OUTPUT_BC_PATH}.global" "$OUTPUT_BC_PATH"
 
 # 5. Check if 'main' function exists
 MAIN_FOUND="No"

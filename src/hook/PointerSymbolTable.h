@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 #include <set>
 #include <vector>
 
@@ -20,18 +21,20 @@ struct PtrRecord {
 constexpr size_t BUFFER_SIZE = 16*4096/sizeof(PtrRecord);
 extern PtrRecord buffer[BUFFER_SIZE];
 extern size_t bufferIndex;
-extern size_t K; // context length
 
 class PtaHook {
 private:
+  size_t K; // context length
+  uint64_t mode;
   std::map<uint64_t, std::pair<VId, size_t>> ptrToVid;
   /// (Vid, K-context)
   std::unordered_map<VId, std::set<std::pair<VId, std::vector<VId>>>> pts;
+  std::unordered_set<VId> bb_coverage;
   /// (function name, [alloca's pointers])
   std::vector<std::pair<VId, std::vector<uint64_t>>> scopeStack;
 
 public:
-  static void init(size_t k) { K = k; }
+  static void init(size_t k, uint64_t mode) { Instance().K = k; if (!Instance().mode) Instance().mode = mode; }
   static void stopAndConsume();
   static void dump(const char *dumpPath);
 
