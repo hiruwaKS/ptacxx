@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
-"""Send one-line query instructions to a server.py endpoint using environment variables."""
+"""Send query instructions to a server.py endpoint using environment variables.
 
+The query is taken from, in order of priority:
+    --cmd="..."  : the string is sent as the query
+    --file=PATH  : the file content is read and sent as the query (may be multi-line)
+    positional args / stdin : one-line query (legacy)
+"""
+
+import argparse
 import json
 import os
 import sys
@@ -48,20 +55,26 @@ def main():
         sys.exit(1)
     
     query = None
-    if len(sys.argv) > 1:
-        encoded_args = [encode_if_necessary(arg) for arg in sys.argv[1:]]
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--cmd", type=str)
+    parser.add_argument("--file", type=str)
+    args, rest = parser.parse_known_args(sys.argv[1:])
+
+    if args.cmd is not None:
+        query = args.cmd
+    elif args.file is not None:
+        with open(args.file, "r", encoding="utf-8", errors="replace") as f:
+            query = f.read()
+    elif rest:
+        encoded_args = [encode_if_necessary(arg) for arg in rest]
         query = " ".join(encoded_args)
-    
+
     if query is None:
         query = sys.stdin.readline()
         if query == "":
-            print("client.py: missing query; pass it as an argument or pipe one line to stdin", file=sys.stderr)
+            print("client.py: missing query; pass --cmd, --file, an argument or pipe one line to stdin", file=sys.stderr)
             sys.exit(1)
         query = query.rstrip("\r\n")
-    
-    if "\n" in query or "\r" in query:
-        print("client.py: query must be a single line", file=sys.stderr)
-        sys.exit(1)
     
     try:
         result = send_query(url, query, timeout)
@@ -80,8 +93,12 @@ def main():
         print(f"client.py: request timed out after {timeout}s", file=sys.stderr)
         sys.exit(1)
     
-    if result.get("output"):
-        print(result["output"], end="")
+    output = result.get("output")
+    if isinstance(output, list):
+        for item in output:
+            print(item, end="")
+    elif output:
+        print(output, end="")
     if result.get("error"):
         print(result["error"], end="", file=sys.stderr)
     if not result.get("ok"):

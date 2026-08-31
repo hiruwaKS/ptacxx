@@ -94,7 +94,8 @@ llvm::Value* ensureI64(llvm::Value *V, llvm::BasicBlock::iterator instPos);
 
 std::string getDemangledName(const std::string &mangled);
 
-/// split the name to namespace and the remain, right-assoc (A::B::C -> (A,B::C))
+/// @return true if F is a constructor (Itanium ABI), excluding destructors
+bool isCtorFunction(llvm::Function *F);/// split the name to namespace and the remain, right-assoc (A::B::C -> (A,B::C))
 std::pair<std::string, std::string> getNamespacePair(const std::string &demangled);
 
 std::string getAllNamespaceStripped(const std::string &demangled);

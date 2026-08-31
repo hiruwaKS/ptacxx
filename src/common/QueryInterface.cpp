@@ -5,6 +5,7 @@
 #include <llvm/ADT/Hashing.h>
 #include <llvm/ADT/StringMap.h>
 #include <llvm/IR/GlobalValue.h>
+#include <llvm/IR/Instructions.h>
 #include <llvm/Support/raw_ostream.h>
 
 #include <filesystem>
@@ -366,7 +367,8 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       return PAQuery{IRParseMessage{
           "commands:\n"
           "  stat | s                  show IR metadata and statistics\n"
-          "  <vid> [n=1]               print detailed value debug info, to locate and debug; n = number of subsequent neighbors to show\n"
+          "  <vid> [<vid> ...]         print detailed value debug info for one or more vids\n"
+          "  <vid> -c <i>              print detailed value debug info for vid and the next i-1 vids\n"
           "  site [vid]                list allocation sites of a function or all\n"
           "  st <vid>                  print struct type debug info\n"
           "  note/n <vid> [note/-d/-f] note - view/append/delete; -f prints note file location\n"
@@ -391,7 +393,7 @@ PAQuery parse(const std::string &input, IRManager &irm) {
           "  stds                      toggle whether to silence std:: globals\n"
           "  llvms                     toggle whether to silence llvm:: globals\n"
           "  rts                       toggle whether to silence runtime globals\n"
-          "  crash                     run crash test (exercise all pointers) (TODO)\n"
+          "  test                      run probe tests\n"
           "  help | h                  show help\n"
           "notes:\n"
           "  prefix in func/global/identified structType can be a demangled name, which contains ' ' '(' ')' chars sometimes\n"
@@ -408,22 +410,65 @@ PAQuery parse(const std::string &input, IRManager &irm) {
     }
 
     if (cmd[0] == '@' || isdigit(cmd[0])) {
-      auto [nStr, unread2] = eatToken(unread);
-      if (cmd.empty() || unread2.size())
-        return PAQuery{SyntaxError{"<vid> [n=1]"}};
-      int32_t n = 1;
-      if (!nStr.empty()) n = toIntStrict(nStr);
-      auto start = parseVid(cmd, irm);
       std::string buf;
       llvm::raw_string_ostream os{buf};
-      for (int32_t i = 0; i < n; i++) {
-        if (auto *V = irm.vidToValue(start+i))
-          irm.printValue(os, V, IRManager::PRT_DEBUG);
-        if (auto *ST = irm.vidToIdStruct(start+i))
-          irm.printIdStructType(os, ST, IRManager::PRT_DEBUG);
+      bool found = false;
+      unsigned silenced = 0;
+      auto silenceName = [](llvm::Value *V) -> std::string {
+        if (auto *F = llvm::dyn_cast<llvm::Function>(V)) return F->getName().str();
+        if (auto *GV = llvm::dyn_cast<llvm::GlobalValue>(V)) return GV->getName().str();
+        if (auto *I = llvm::dyn_cast<llvm::Instruction>(V))
+          if (I->getFunction()) return I->getFunction()->getName().str();
+        if (auto *BB = llvm::dyn_cast<llvm::BasicBlock>(V))
+          if (BB->getParent()) return BB->getParent()->getName().str();
+        return "";
+      };
+      auto printSilence = [&](unsigned cnt) {
+        if (cnt == 0) return;
+        os << "(silence " << cnt << " query)\n";
+      };
+      auto handleVid = [&](int32_t vid, bool &any) {
+        if (auto *V = irm.vidToValue(vid)) {
+          std::string name = silenceName(V);
+          if (name.empty() || !shouldSilence(name)) {
+            printSilence(silenced);
+            irm.printValue(os, V, detailed ? IRManager::PRT_DETAILED : IRManager::PRT_VID);
+            any = true;
+          } else {
+            ++silenced;
+            any = true;
+          }
+        }
+        if (auto *ST = irm.vidToIdStruct(vid)) {
+          printSilence(silenced);
+          irm.printIdStructType(os, ST, detailed ? IRManager::PRT_DETAILED : IRManager::PRT_VID);
+          any = true;
+        }
+      };
+      auto [arg1, unread2] = eatToken(unread);
+      if (arg1 == "-c") {
+        auto [countStr, unread3] = eatToken(unread2);
+        if (countStr.empty() || stripPrefix(unread3).size())
+          return PAQuery{SyntaxError{"<vid> -c <i>"}};
+        int32_t n = toIntStrict(countStr);
+        auto start = parseVid(cmd, irm);
+        for (int32_t i = 0; i < n; i++) handleVid(start + i, found);
+      } else {
+        std::string vidStr = cmd;
+        std::string remaining = unread;
+        while (!vidStr.empty()) {
+          auto vid = parseVid(vidStr, irm);
+          handleVid(vid, found);
+          vidStr = arg1;
+          remaining = unread2;
+          std::tie(arg1, unread2) = eatToken(remaining);
+          if (vidStr == "-c")
+            return PAQuery{SyntaxError{"<vid> -c <i>"}};
+        }
       }
+      printSilence(silenced);
       os.flush();
-      if (buf.size()) return PAQuery{IRParseMessage{buf}};
+      if (buf.size() && found) return PAQuery{IRParseMessage{buf}};
       return PAQuery{IRParseError{"vid not found"}};
     }
     
@@ -582,6 +627,11 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       if (!unread.empty()) return PAQuery{SyntaxError{"too many arguments"}};
       runtimeSilence = !runtimeSilence;
       return PAQuery{IRParseMessage{"runtimeSilence = " + std::to_string(runtimeSilence)}};
+    }
+
+    if (cmd == "test") {
+      if (!unread.empty()) return PAQuery{SyntaxError{"too many arguments"}};
+      return PAQuery{TestIn{}};
     }
 
     if (cmd == "crash") {
@@ -1235,6 +1285,9 @@ std::string responseToString(const PAResponse &response, IRManager &irm) {
 
     if constexpr (std::is_same_v<T, CrashTestOut>)
       return "pass";
+
+    if constexpr (std::is_same_v<T, TestOut>)
+      return arg.result;
 
     return "(unknown query type)";
   }, response);

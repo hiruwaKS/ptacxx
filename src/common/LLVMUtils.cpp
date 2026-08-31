@@ -36,6 +36,19 @@ std::string getDemangledName(const std::string &mangled) {
   return result;
 }
 
+bool isCtorFunction(llvm::Function *F) {
+  if (llvmSkip(F)) return false;
+  llvm::ItaniumPartialDemangler demangler;
+  if (demangler.partialDemangle(F->getName().str().c_str()) != 0) return false;
+  if (!demangler.isCtorOrDtor()) return false;
+  size_t len = 0;
+  char *fn = demangler.getFunctionName(nullptr, &len);
+  if (!fn) return false;
+  std::string name(fn, len);
+  std::free(fn);
+  return name.find("::~") == std::string::npos; // exclude destructor
+}
+
 std::pair<std::string, std::string> getNamespacePair(const std::string &demangled) {
   int templateDepth = 0;
   for (size_t i = 0; i < demangled.length(); ++i) {

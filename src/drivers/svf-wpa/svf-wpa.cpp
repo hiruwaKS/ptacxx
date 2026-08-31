@@ -32,7 +32,7 @@ using namespace SVF;
 class SVFWPAQueryServer : public IncluPAWrapper {
 private:
   std::unique_ptr<SVFIRBuilder> _builder;
-  std::unique_ptr<SVFIR> _pag;
+  SVFIR *_pag = nullptr;
   std::unique_ptr<WPAPass> _wpa;
   std::unordered_map<const Value *, NodeID> _valueToNode;
   std::unordered_map<NodeID, const Value *> _nodeToValue;
@@ -44,9 +44,9 @@ private:
     auto &M = _irm.getModule();
     LLVMModuleSet::buildSVFModule(M);
     _builder = std::make_unique<SVFIRBuilder>();
-    _pag.reset(_builder->build());
+    _pag = _builder->build();
     _wpa = std::make_unique<WPAPass>();
-    _wpa->runOnModule(_pag.get());
+    _wpa->runOnModule(_pag);
     // mapping ID
     auto *mset = LLVMModuleSet::getLLVMModuleSet();
     for (auto it = _pag->begin(); it != _pag->end(); ++it) {
@@ -68,9 +68,9 @@ private:
     return expanded;
   }
   bool getPointsToSet(Ptr value, PointsToSet &pts) override {
-    auto it = _valueToNode.find(value);
-    if (it == _valueToNode.end()) throw std::runtime_error("fatal");
-    NodeID nodeId = it->second;
+    auto *mset = LLVMModuleSet::getLLVMModuleSet();
+    if (!mset->hasValueNode(value)) throw std::runtime_error("fatal");
+    NodeID nodeId = mset->getValueNode(value);
     const PointsTo& ptids = _wpa->getPts(nodeId);
     for (auto objId: ptids) {
       auto it2 = _nodeToValue.find(objId);
@@ -81,12 +81,11 @@ private:
   }
 
   PTAliasResult getAliasResult(Ptr a, Ptr b) override {
-    auto it_a = _valueToNode.find(a);
-    auto it_b = _valueToNode.find(b);
-    if (it_a == _valueToNode.end() || it_b == _valueToNode.end())
+    auto *mset = LLVMModuleSet::getLLVMModuleSet();
+    if (!mset->hasValueNode(a) || !mset->hasValueNode(b))
       throw std::runtime_error("fatal");
-    const PointsTo& raw1 = _wpa->getPts(it_a->second);
-    const PointsTo& raw2 = _wpa->getPts(it_b->second);
+    const PointsTo& raw1 = _wpa->getPts(mset->getValueNode(a));
+    const PointsTo& raw2 = _wpa->getPts(mset->getValueNode(b));
     PointsTo exp1 = expandFIObjs(raw1);
     PointsTo exp2 = expandFIObjs(raw2);
     return (exp1.test(_pag->getBlackHoleNode()) || exp2.test(_pag->getBlackHoleNode())

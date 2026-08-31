@@ -119,6 +119,10 @@ public:
     return it != _vidToIdStructCache.end() ? it->second : nullptr;
   }
 
+  /// @return the sized object StructType of a constructor function, resolved
+  /// by demangling its class name; nullptr if not found or not a ctor
+  llvm::StructType *getCtorStructType(llvm::Function *F) const;
+
   llvm::ArrayRef<GlobalEntry> listGlobal(const std::string &prefix) const;
 
   /// @throw if the name is not found or maps to multiple values

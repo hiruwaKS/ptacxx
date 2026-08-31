@@ -4,10 +4,12 @@
 #include "Common.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/IR/Constants.h"
 
 #include <iostream>
 #include <algorithm>
 #include <queue>
+#include <string>
 
 namespace ptacxx::options {
 /// @note this will gather all options that used in PAWrapper, defined dispersedly
@@ -187,6 +189,333 @@ std::string PAWrapper::handleQueryWrapper(const std::string &req) {
       if constexpr (std::is_same_v<T, AllocSitesIn>) {
         computeAllocationSites();
         return AllocSitesOut{getAllocationSites(arg.f)};
+      }
+      if constexpr (std::is_same_v<T, TestIn>) {
+        enum class Expectation {
+          MayAlias,
+          NoAlias,
+          MustAlias,
+          PartialAlias,
+          MayPointsTo,
+          NoPointsTo,
+          MayReach
+        };
+
+        enum class TestStatus {
+          Pass,
+          Fail,
+          PassButExpectedFail,
+          FailAndExpectedFail
+        };
+
+        struct TestCase {
+          Expectation expectation;
+          bool expectedFail;
+          llvm::Value *lhs;
+          llvm::Value *rhs = nullptr;
+          int idx = 0;
+        };
+
+        struct Summary {
+          unsigned total = 0;
+          unsigned pass = 0;
+          unsigned fail = 0;
+          unsigned passButExpectedFail = 0;
+          unsigned failAndExpectedFail = 0;
+        };
+
+        auto aliasToString = [](llvm::AliasResult result) -> const char * {
+          if (result == llvm::AliasResult::NoAlias) return "NoAlias";
+          if (result == llvm::AliasResult::MayAlias) return "MayAlias";
+          if (result == llvm::AliasResult::MustAlias) return "MustAlias";
+          if (result == llvm::AliasResult::PartialAlias) return "PartialAlias";
+          return "MayAlias";
+        };
+
+        auto pointsToToString = [](bool mayPointsTo) -> const char * {
+          return mayPointsTo ? "MayPointsTo" : "NoPointsTo";
+        };
+
+        auto expectationToString = [](Expectation expectation) -> const char * {
+          switch (expectation) {
+          case Expectation::MayAlias:
+            return "MayAlias";
+          case Expectation::NoAlias:
+            return "NoAlias";
+          case Expectation::MustAlias:
+            return "MustAlias";
+          case Expectation::PartialAlias:
+            return "PartialAlias";
+          case Expectation::MayPointsTo:
+            return "MayPointsTo";
+          case Expectation::NoPointsTo:
+            return "NoPointsTo";
+          case Expectation::MayReach:
+            return "MayReach";
+          }
+          return "MayAlias";
+        };
+
+        auto reachToString = [](bool mayReach) -> const char * {
+          return mayReach ? "MayReach" : "NoReach";
+        };
+
+        auto statusToString = [](TestStatus status) -> const char * {
+          switch (status) {
+          case TestStatus::Pass:
+            return "Pass";
+          case TestStatus::Fail:
+            return "Fail";
+          case TestStatus::PassButExpectedFail:
+            return "PassButExpectedFail";
+          case TestStatus::FailAndExpectedFail:
+            return "FailAndExpectedFail";
+          }
+          return "Fail";
+        };
+
+        auto matchesExpectation = [](Expectation expectation,
+                                     llvm::AliasResult actual) {
+          // TODO: distinguish MustAlias/PartialAlias when wrapped analyses
+          // provide these results consistently.
+          switch (expectation) {
+          case Expectation::MayAlias:
+            return actual != llvm::AliasResult::NoAlias;
+          case Expectation::NoAlias:
+            return actual == llvm::AliasResult::NoAlias;
+          case Expectation::MustAlias:
+            return actual != llvm::AliasResult::NoAlias;
+          case Expectation::PartialAlias:
+            return actual == llvm::AliasResult::MayAlias;
+          case Expectation::MayPointsTo:
+          case Expectation::NoPointsTo:
+          case Expectation::MayReach:
+            return false;
+          }
+          return false;
+        };
+
+        auto getExpectation = [](llvm::StringRef name,
+                                 Expectation &expectation,
+                                 bool &expectedFail) {
+          expectedFail = false;
+          if (name == "MAYALIAS") {
+            expectation = Expectation::MayAlias;
+            return true;
+          }
+          if (name == "NOALIAS") {
+            expectation = Expectation::NoAlias;
+            return true;
+          }
+          if (name == "MUSTALIAS") {
+            expectation = Expectation::MustAlias;
+            return true;
+          }
+          if (name == "PARTIALALIAS") {
+            expectation = Expectation::PartialAlias;
+            return true;
+          }
+          if (name == "EXPECTEDFAIL_MAYALIAS") {
+            expectation = Expectation::MayAlias;
+            expectedFail = true;
+            return true;
+          }
+          if (name == "EXPECTEDFAIL_NOALIAS") {
+            expectation = Expectation::NoAlias;
+            expectedFail = true;
+            return true;
+          }
+          return false;
+        };
+
+        auto getIndex = [](llvm::Value *value, int &idx) {
+          value = value->stripPointerCasts();
+          if (auto *CI = llvm::dyn_cast<llvm::ConstantInt>(value)) {
+            idx = static_cast<int>(CI->getSExtValue());
+            return true;
+          }
+          return false;
+        };
+
+        auto contains = [](PointsToSetView pts, llvm::Value *value) {
+          if (!pts)
+            return false;
+          auto targets = pts.value();
+          return std::find(targets.begin(), targets.end(), value) != targets.end();
+        };
+
+        llvm::DenseMap<int, llvm::Value *> marks;
+        llvm::DenseMap<int, llvm::Function *> functionMarks;
+        std::vector<TestCase> tests;
+        for (llvm::Function &F : _irm.getModule()) {
+          for (llvm::BasicBlock &BB : F) {
+            for (llvm::Instruction &I : BB) {
+              auto *CB = llvm::dyn_cast<llvm::CallBase>(&I);
+              if (!CB)
+                continue;
+              llvm::Function *callee = CB->getCalledFunction();
+              if (!callee)
+                continue;
+
+              const std::string mangled = callee->getName().str();
+              std::string name = getDemangledName(mangled);
+              name = getAllNamespaceStripped(name);
+
+              int idx = 0;
+              if (name == "MARK_FUNCTION" || mangled == "MARK_FUNCTION") {
+                if (CB->arg_size() >= 1 && getIndex(CB->getArgOperand(0), idx))
+                  functionMarks[idx] = I.getFunction();
+                continue;
+              }
+
+              if (name == "CHECK_REACH" || mangled == "CHECK_REACH") {
+                if (CB->arg_size() < 1 || !getIndex(CB->getArgOperand(0), idx))
+                  continue;
+                tests.push_back(TestCase{
+                    Expectation::MayReach,
+                    false,
+                    I.getFunction(),
+                    nullptr,
+                    idx});
+                continue;
+              }
+
+              if (CB->arg_size() < 2)
+                continue;
+
+              if (name == "MARK_AS" || mangled == "MARK_AS") {
+                if (getIndex(CB->getArgOperand(1), idx))
+                  marks[idx] = CB->getArgOperand(0);
+                continue;
+              }
+
+              Expectation expectation;
+              bool expectedFail = false;
+              if (name == "CHECK_POINTS_TO" || mangled == "CHECK_POINTS_TO") {
+                if (!getIndex(CB->getArgOperand(1), idx))
+                  continue;
+                tests.push_back(TestCase{
+                    Expectation::MayPointsTo,
+                    false,
+                    CB->getArgOperand(0),
+                    nullptr,
+                    idx});
+                continue;
+              }
+              if (name == "CHECK_NO_POINTS_TO" ||
+                  mangled == "CHECK_NO_POINTS_TO") {
+                if (!getIndex(CB->getArgOperand(1), idx))
+                  continue;
+                tests.push_back(TestCase{
+                    Expectation::NoPointsTo,
+                    false,
+                    CB->getArgOperand(0),
+                    nullptr,
+                    idx});
+                continue;
+              }
+              if (name == "CHECK_ALIAS" || mangled == "CHECK_ALIAS") {
+                if (!getIndex(CB->getArgOperand(1), idx))
+                  continue;
+                tests.push_back(TestCase{
+                    Expectation::MayAlias,
+                    false,
+                    CB->getArgOperand(0),
+                    nullptr,
+                    idx});
+                continue;
+              }
+              if (!getExpectation(name, expectation, expectedFail) &&
+                  !getExpectation(mangled, expectation, expectedFail))
+                continue;
+
+              tests.push_back(TestCase{
+                  expectation,
+                  expectedFail,
+                  CB->getArgOperand(0),
+                  CB->getArgOperand(1),
+                  0});
+            }
+          }
+        }
+
+        Summary summary;
+        std::string buf;
+        llvm::raw_string_ostream os(buf);
+        for (const TestCase &test : tests) {
+          llvm::AliasResult actual = llvm::AliasResult::NoAlias;
+          bool mayPointsTo = false;
+          bool mayReach = false;
+          bool isPointsToCheck = test.expectation == Expectation::MayPointsTo ||
+                                 test.expectation == Expectation::NoPointsTo;
+          bool isReachCheck = test.expectation == Expectation::MayReach;
+          llvm::Value *rhs = test.rhs;
+          if (!rhs && isReachCheck) {
+            auto it = functionMarks.find(test.idx);
+            if (it != functionMarks.end())
+              rhs = it->second;
+          } else if (!rhs) {
+            auto it = marks.find(test.idx);
+            if (it != marks.end())
+              rhs = it->second;
+          }
+
+          bool passed = false;
+          if (rhs && isPointsToCheck) {
+            mayPointsTo = contains(getPointsToSetCached(test.lhs), rhs);
+            passed = test.expectation == Expectation::MayPointsTo ? mayPointsTo
+                                                                  : !mayPointsTo;
+          } else if (rhs && isReachCheck) {
+            auto *from = llvm::dyn_cast<llvm::Function>(test.lhs);
+            auto *to = llvm::dyn_cast<llvm::Function>(rhs);
+            if (from && to) {
+              _cg.buildCG([this](llvm::CallBase *callInst,
+                                 llvm::Function *caller) {
+                return this->indirectCallResolver(callInst, caller);
+              });
+              mayReach = !_cg.reach(from, to, false).empty();
+              passed = mayReach;
+            }
+          } else if (rhs) {
+            actual = getAliasResultCached(test.lhs, rhs);
+            passed = matchesExpectation(test.expectation, actual);
+          }
+          TestStatus status = passed ? TestStatus::Pass : TestStatus::Fail;
+          if (test.expectedFail)
+            status = passed ? TestStatus::PassButExpectedFail
+                            : TestStatus::FailAndExpectedFail;
+
+          ++summary.total;
+          switch (status) {
+          case TestStatus::Pass:
+            ++summary.pass;
+            break;
+          case TestStatus::Fail:
+            ++summary.fail;
+            break;
+          case TestStatus::PassButExpectedFail:
+            ++summary.passButExpectedFail;
+            break;
+          case TestStatus::FailAndExpectedFail:
+            ++summary.failAndExpectedFail;
+            break;
+          }
+
+          os << expectationToString(test.expectation) << " "
+             << statusToString(status) << " "
+             << (isReachCheck ? reachToString(mayReach)
+                 : isPointsToCheck ? pointsToToString(mayPointsTo)
+                                   : aliasToString(actual))
+             << " "
+             << _irm.valueToVId(test.lhs) << " "
+             << (rhs ? _irm.valueToVId(rhs) : VID_NOT_REGISTERED) << "\n";
+        }
+        os << "summary total=" << summary.total << " Pass=" << summary.pass
+           << " Fail=" << summary.fail
+           << " PassButExpectedFail=" << summary.passButExpectedFail
+           << " FailAndExpectedFail=" << summary.failAndExpectedFail;
+        os.flush();
+        return TestOut{buf};
       }
       return IRParseError{"unknown query type or not available"};
     }, query);

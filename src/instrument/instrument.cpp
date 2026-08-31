@@ -12,6 +12,8 @@
 #include <llvm/IR/Instructions.h>
 #include <llvm/Support/CommandLine.h>
 
+#include <cstdlib>
+
 using namespace llvm;
 
 LLVM_CL_IGNORE_WARNINGS_BEGIN
@@ -21,15 +23,12 @@ static cl::opt<std::string>
 static cl::opt<std::string>
     OutPath("o", cl::desc("output path, end with .ll or .bc"),
            cl::ValueRequired, cl::Required);
-static cl::opt<std::string>
-    DumpPath("dump", cl::desc("dump file path, can end with .txt"),
-           cl::ValueRequired, cl::Required);
 static cl::opt<bool>
     ModePtr("mode-ptr", cl::desc("use pointer mode"), cl::init(false));
 static cl::opt<bool>
     ModeBB("mode-bb", cl::desc("use bb mode"), cl::init(false));
-static cl::opt<int>
-    KContext("context", cl::desc("K-context sensitivity"), cl::init(0));
+static cl::opt<bool>
+    ModeCG("mode-cg", cl::desc("use cg mode"), cl::init(false));
 
 LLVM_CL_IGNORE_WARNINGS_END
 
@@ -61,18 +60,12 @@ int main(int argc, char *argv[]) {
   // 2.1 used types
 
   auto *VoidTy = Type::getVoidTy(Ctx);
-#if LLVM_VERSION_MAJOR <= 14
-  auto *I8PtrTy = Type::getInt8PtrTy(Ctx);
-#else
-  auto *I8PtrTy = PointerType::get(Ctx, 0);
-#endif
   auto *I16Ty = Type::getInt16Ty(Ctx);
   auto *I32Ty = Type::getInt32Ty(Ctx);
   auto *I64Ty = Type::getInt64Ty(Ctx);
-  auto *ISizeTy = Type::getIntNTy(Ctx, sizeof(size_t) * 8);
-  auto *hookInitTy = FunctionType::get(VoidTy, {ISizeTy, I64Ty}, false);
+  auto *hookInitTy = FunctionType::get(VoidTy, {I64Ty}, false);
   auto *hookPushTy = FunctionType::get(VoidTy, {I32Ty, I16Ty, I64Ty, I64Ty}, false);
-  auto *hookDumpTy = FunctionType::get(VoidTy, {I8PtrTy}, false);
+  auto *hookDumpTy = FunctionType::get(VoidTy, {}, false);
   auto *registerGlobalsTy = FunctionType::get(I32Ty, {}, false);
 
   // 2.2 add decls
@@ -100,21 +93,30 @@ int main(int argc, char *argv[]) {
       auto &entryBB = F->getEntryBlock();
       for (auto &BB : *F) {
         auto firstPt = BB.getFirstInsertionPt();
-        if (ModePtr) {
+        if (ModePtr || ModeCG) {
           beforeFirstPt.clear();
           for (auto &I : BB) {
             if (&I == &*firstPt) break;
             beforeFirstPt.push_back(I.getIterator());
           }
           if (&BB == &entryBB) {
-            // 2.3.1 begin scope
+            // 2.3.1 begin scope (ptr: scope opener; cg: function-entry marker)
             auto fvid = irm.valueToVId(F);
             CallInst::Create(hookPushFn, {VID(fvid), CONSTI16(PTR_ACTION_BEGINSCOPE), CONSTI64(0), CONSTI64(0)}, 
               "", LLVM_INS(firstPt));
             // 2.3.2 args
-            for (auto &arg : F->args()) 
-              if (arg.getType()->isPointerTy())
-                emitPointerProbe(&arg, firstPt);
+            if (ModePtr)
+              for (auto &arg : F->args()) 
+                if (arg.getType()->isPointerTy())
+                  emitPointerProbe(&arg, firstPt);
+            // 2.3.x bind constructed object address to its ctor vid (dynamic type id)
+            if (ModeCG && isCtorFunction(F) && F->arg_size() > 0) {
+              uint64_t ctorSize = 0;
+              if (auto *ST = irm.getCtorStructType(F))
+                ctorSize = DL.getTypeAllocSize(ST);
+              CallInst::Create(hookPushFn, {VID(fvid), CONSTI16(PTR_ACTION_CONS),
+                ensureI64(F->getArg(0), firstPt), CONSTI64(ctorSize)}, "", LLVM_INS(firstPt));
+            }
           }
           auto beforePtIt = beforeFirstPt.begin();
           auto afterPtIt = firstPt;
@@ -126,7 +128,39 @@ int main(int argc, char *argv[]) {
             it = reachFirstPt ? afterPtIt : *beforePtIt;
             if (it == BB.end()) break;
             auto &I = *it;
-            if (I.getType()->isPointerTy()) {
+            if (ModeCG) {
+              auto emitArgFlat = [&](auto &self, Value *V) -> void {
+                // flatten by-value structs into number/pointer leaves
+                if (auto *ST = dyn_cast<StructType>(V->getType())) {
+                  if (ST->isSized()) {
+                    for (unsigned i = 0; i < ST->getNumElements(); ++i)
+                      self(self, ExtractValueInst::Create(V, {i}, "", LLVM_INS(I.getIterator())));
+                    return;
+                  }
+                }
+                // leaf: size==1 marks a pointer (so hook only does type lookup on pointers)
+                auto isPtr = V->getType()->isPointerTy() ? 1 : 0;
+                // Only integer/pointer leaves carry a real runtime value. Anything else
+                // (metadata, void, label, opaque) has no addressable representation, so
+                // emit a placeholder 0 so the arg stream stays positionally aligned.
+                Value *argVal = nullptr;
+                if (V->getType()->isIntegerTy() || V->getType()->isPointerTy())
+                  argVal = ensureI64(V, I.getIterator());
+                else
+                  argVal = CONSTI64(0);
+                CallInst::Create(hookPushFn, {CONSTI32(0), CONSTI16(PTR_ACTION_ARG),
+                  argVal, CONSTI64(isPtr)}, "", I.getIterator());
+              };
+              if (auto *CB = dyn_cast<CallBase>(&I)) {
+                // 2.3.x clear any stale args, then push all arguments before the
+                // call; hook buffers them and consumes them at callee's BEGINSCOPE.
+                CallInst::Create(hookPushFn, {CONSTI32(0), CONSTI16(PTR_ACTION_ARGCLEAR),
+                  CONSTI64(0), CONSTI64(0)}, "", I.getIterator());
+                for (auto &arg : CB->args())
+                  emitArgFlat(emitArgFlat, arg);
+              }
+            }
+            if (ModePtr && I.getType()->isPointerTy()) {
               auto instPos = reachFirstPt ? I.getNextNode()->getIterator() : firstPt;
               if (isa<AllocaInst>(I)) {
                 // 2.3.3 alloca case (no probe)
@@ -181,10 +215,11 @@ int main(int argc, char *argv[]) {
           } while (true);
         }
         if (ModeBB) {
+          auto fvid = irm.valueToVId(F);
           auto bbid = irm.valueToVId(&BB);
           const auto &instPos = firstPt;
-          CallInst::Create(hookPushFn, {VID(bbid), CONSTI16(PTR_ACTION_BASICBLOCK), 
-            CONSTI64(0), CONSTI64(0)}, "", LLVM_INS(instPos));
+          CallInst::Create(hookPushFn, {CONSTI32(0), CONSTI16(PTR_ACTION_BASICBLOCK),
+            CONSTI64(fvid), CONSTI64(bbid)}, "", LLVM_INS(instPos));
         }
       }
     }
@@ -213,10 +248,10 @@ int main(int argc, char *argv[]) {
   // 2.5 wrap main
 
   // int main(int argc, char **argv) {
-  //   __hook_init(K, mode);
+  //   __hook_init(mode);
   //   __registerGlobals();
   //   int result = __orig_main(argc, argv);
-  //   __hook_dump(dump_path);
+  //   __hook_dump();
   //   return result;
   // }
   auto *origMainFn = M.getFunction("main");
@@ -225,19 +260,14 @@ int main(int argc, char *argv[]) {
   origMainFn->setName("__orig_main");
   auto *newMainFn = declFn(M, "main", mainTy);
   auto *entryBB = BasicBlock::Create(Ctx, "", newMainFn);
-  auto KCon = ConstantInt::get(ISizeTy, static_cast<uint64_t>(KContext));
-  auto Mode = ConstantInt::get(I64Ty, (ModePtr ? MODE_PTR_MASK : 0) | (ModeBB ? MODE_BB_MASK : 0));
-  CallInst::Create(hookInitFn, {KCon, Mode}, "", entryBB);
+  auto Mode = ConstantInt::get(I64Ty, (ModePtr ? MODE_PTR_MASK : 0) | (ModeBB ? MODE_BB_MASK : 0) | (ModeCG ? MODE_CG_MASK : 0));
+  CallInst::Create(hookInitFn, {Mode}, "", entryBB);
   if (ModePtr) CallInst::Create(registerGlobalsFn, "", entryBB);
   llvm::SmallVector<llvm::Value *> origArgs;
   for (auto &arg : newMainFn->args())
     origArgs.push_back(&arg);
   auto *result = CallInst::Create(origMainFn, origArgs, "", entryBB);
-  auto *dumpPath = ConstantDataArray::getString(Ctx, DumpPath);
-  auto *dumpPathGlobal = new GlobalVariable(M, dumpPath->getType(), true, 
-    GlobalVariable::PrivateLinkage, dumpPath, ".dump_path");
-  auto *dumpPathPtr = ConstantExpr::getBitCast(dumpPathGlobal, I8PtrTy);
-  CallInst::Create(hookDumpFn, dumpPathPtr, "", entryBB);
+  CallInst::Create(hookDumpFn, "", entryBB);
   if (result->getType()->isVoidTy()) ReturnInst::Create(Ctx, entryBB);
   else ReturnInst::Create(Ctx, result, entryBB);
 

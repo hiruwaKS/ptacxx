@@ -117,7 +117,7 @@ class QueryResponseProcess:
         for line in self.proc.stderr:
             self._queue_red(line)
 
-    def query(self, text):
+    def query(self, text, count=1):
         with self.lock:
             self.has_queried = True
             if self.startup_timer is not None:
@@ -132,31 +132,36 @@ class QueryResponseProcess:
             if self.proc.poll() is not None:
                 raise RuntimeError(f"program exited with code {self.proc.returncode}")
             try:
-                self.proc.stdin.write(text + "\n")
+                self.proc.stdin.write(text)
+                if not text.endswith("\n"):
+                    self.proc.stdin.write("\n")
                 self.proc.stdin.flush()
             except (BrokenPipeError, OSError) as exc:
                 raise RuntimeError(f"failed to write to program: {exc}") from exc
 
-            payload = []
-            in_result = False
-            while True:
-                line = self.stdout_queue.get()
-                if line is None:
-                    raise RuntimeError("program exited while waiting for query result")
-                if not in_result:
-                    marker = line.find(self.RESULT_START)
-                    if marker == -1:
-                        continue
-                    line = line[marker + len(self.RESULT_START):]
-                    in_result = True
-                    if not line.strip():
-                        continue
+            return [self._read_result() for _ in range(count)]
 
-                end = line.find(self.RESULT_END)
-                if end != -1:
-                    payload.append(line[:end])
-                    return "".join(payload)
-                payload.append(line)
+    def _read_result(self):
+        payload = []
+        in_result = False
+        while True:
+            line = self.stdout_queue.get()
+            if line is None:
+                raise RuntimeError("program exited while waiting for query result")
+            if not in_result:
+                marker = line.find(self.RESULT_START)
+                if marker == -1:
+                    continue
+                line = line[marker + len(self.RESULT_START):]
+                in_result = True
+                if not line.strip():
+                    continue
+
+            end = line.find(self.RESULT_END)
+            if end != -1:
+                payload.append(line[:end])
+                return "".join(payload)
+            payload.append(line)
 
     def close(self):
         try:
@@ -204,16 +209,22 @@ def make_handler(process):
             if not isinstance(query, str) or not query.strip():
                 self._send_json(400, {"ok": False, "error": "'query' must be a non-empty string"})
                 return
-            if "\n" in query or "\r" in query:
-                self._send_json(400, {"ok": False, "error": "'query' must be one line"})
+
+            lines = query.split("\n")
+            while lines and not lines[-1].strip():
+                lines.pop()
+            count = len(lines)
+            if count == 0:
+                self._send_json(400, {"ok": False, "error": "'query' must be a non-empty string"})
                 return
 
             try:
-                output = process.query(query)
+                outputs = process.query("\n".join(lines), count)
             except RuntimeError as exc:
                 self._send_json(500, {"ok": False, "error": str(exc)})
                 return
 
+            output = outputs[0] if count == 1 else outputs
             self._send_json(200, {"ok": True, "output": output, "error": "", "returncode": 0})
 
     return Handler
@@ -227,7 +238,7 @@ def console_loop(process):
         if not query.strip():
             continue
         try:
-            output = process.query(query)
+            output = process.query(query)[0]
             sys.stdout.write(output)
             sys.stdout.flush()
         except RuntimeError as exc:

@@ -18,6 +18,8 @@
 #include <algorithm>
 #include <functional>
 #include <fstream>
+#include <cstring>
+#include <cstdlib>
 
 /// print lines from a file, [start, end]
 llvm::raw_ostream &printLinesFromFile(llvm::raw_ostream &os, const std::string &path, unsigned start, unsigned end);
@@ -516,4 +518,19 @@ llvm::raw_ostream &IRManager::printStat(llvm::raw_ostream &os) const {
      << "hasGlobalCtor: " << _irStat.hasGlobalCtor << "\n"
      << "hasGlobalDtor: " << _irStat.hasGlobalDtor;
   return os;
+}
+
+llvm::StructType *IRManager::getCtorStructType(llvm::Function *F) const {
+  if (!F || F->arg_size() == 0) return nullptr;
+  llvm::ItaniumPartialDemangler demangler;
+  if (demangler.partialDemangle(F->getName().str().c_str()) != 0) return nullptr;
+  size_t len = 0;
+  char *cls = demangler.getFunctionDeclContextName(nullptr, &len);
+  if (!cls) return nullptr;
+  std::string clsName(cls, std::strlen(cls));
+  std::free(cls);
+  for (auto &ge : listGlobal(clsName))
+    if (auto *ST = vidToIdStruct(ge.id))
+      if (ST->isSized()) return ST;
+  return nullptr;
 }

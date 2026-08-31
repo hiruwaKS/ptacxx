@@ -55,6 +55,7 @@ struct CGReloadIn {};
 struct AllocSitesIn { llvm::Function *f; };
 struct AllAllocSitesIn {};
 struct CrashTestIn {};
+struct TestIn {};
 struct IRParseMessage { std::string message; };
 struct IRParseError  { std::string message; };
 struct SyntaxError   { std::string message; };
@@ -64,7 +65,7 @@ using PAQuery = std::variant<
   SyntaxError,
   IRParseMessage, IRParseError, 
   AliasIn, AliasSetIn, PtsIn, PtIn, ReachableIn, CallOutEdgesIn, CallInEdgesIn, CallGraphIn,
-  CGReloadIn, AllocSitesIn, AllAllocSitesIn, CrashTestIn>;
+  CGReloadIn, AllocSitesIn, AllAllocSitesIn, CrashTestIn, TestIn>;
 
 struct AliasOut     { PTAliasResult result; };
 struct PtsOut       { PointsToSetView targets; };
@@ -76,10 +77,11 @@ struct CallInEdgesOut { ptacxx::CallGraph::EdgesResult inCalledges; ptacxx::Call
 struct CallGraphOut { CallTree cg; };
 struct AllocSitesOut       { llvm::ArrayRef<AllocationSite> sites; };
 struct CrashTestOut {};
+struct TestOut { std::string result; };
 
 using PAResponse = std::variant<
   IRParseMessage, IRParseError, SyntaxError, AnalyzerError,
-  AliasOut, PtsOut, AliasSetOut, PtOut, ReachableOut, CallOutEdgesOut, CallInEdgesOut, CallGraphOut, AllocSitesOut, CrashTestOut>;
+  AliasOut, PtsOut, AliasSetOut, PtOut, ReachableOut, CallOutEdgesOut, CallInEdgesOut, CallGraphOut, AllocSitesOut, CrashTestOut, TestOut>;
 
 PAQuery parse(const std::string &input, IRManager &irm);
 std::string responseToString(const PAResponse &response, IRManager &irm);

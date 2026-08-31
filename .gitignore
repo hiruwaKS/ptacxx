@@ -81,3 +81,9 @@ config/modref.spec
 
 # SVF dump
 *.dot
+
+# report
+report/
+
+# place all tested project
+real-world/

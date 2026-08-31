@@ -1,12 +1,16 @@
 #include "PointerSymbolTable.h"
 
+#include <cstdio>
+#include <cstdlib>
+
 extern "C" {
-  void __hook_init(size_t k);
+  void __hook_init(uint64_t mode);
   void __hook_push(VId vid, int16_t action, uint64_t ptr, uint64_t size);
-  void __hook_dump(const char *dumpPath);
+  void __hook_dump();
 }
-void __hook_init(size_t k) {
-  PtaHook::init(k);
+
+void __hook_init(uint64_t mode) {
+  PtaHook::init(mode);
 }
 
 #if __clang_major__ >= 17
@@ -21,7 +25,7 @@ void __hook_push(VId vid, int16_t action, uint64_t ptr, uint64_t size) {
 #pragma clang diagnostic pop
 #endif
 
-void __hook_dump(const char *dumpPath) {
+void __hook_dump() {
   PtaHook::stopAndConsume();
-  PtaHook::dump(dumpPath);
+  PtaHook::dump();
 }

@@ -4,23 +4,94 @@
 #include <stdexcept>
 #include <algorithm>
 #include <span>
+#include <limits>
+#include <csignal>
+#include <cstdlib>
 
 __attribute__((aligned(4096))) PtrRecord buffer[BUFFER_SIZE];
 
 size_t bufferIndex = 0;
 
+namespace {
+// Flush buffered records and dump the CG trace on abnormal termination, so a
+// case that aborts (e.g. SVF's validateSuccessTests assert on a failing test)
+// still yields its callgraph dump.
+volatile std::sig_atomic_t g_crashDumped = 0;
+[[noreturn]] void crashDumpHandler(int sig) {
+  if (g_crashDumped) _Exit(128 + sig);
+  g_crashDumped = 1;
+  PtaHook::stopAndConsume();
+  PtaHook::dump();
+  _Exit(128 + sig);
+}
+}  // namespace
+
+void PtaHook::init(uint64_t mode) {
+  auto &instance = Instance();
+  std::signal(SIGABRT, crashDumpHandler);
+  std::signal(SIGSEGV, crashDumpHandler);
+  std::signal(SIGTERM, crashDumpHandler);
+  if (!instance.mode) instance.mode = mode;
+
+  if (const char *kEnv = std::getenv("PTACXX_K")) {
+    char *end = nullptr;
+    const uint64_t parsed = std::strtoull(kEnv, &end, 10);
+    if (end && *end == '\0') {
+      instance.K = static_cast<size_t>(parsed);
+    } else {
+      std::fprintf(stderr, "PtaHook: invalid PTACXX_K '%s', using 0\n", kEnv);
+      instance.K = 0;
+    }
+  } else {
+    instance.K = 0;
+  }
+
+  if (const char *bbCtxEnv = std::getenv("PTACXX_BB_CTX")) {
+    char *end = nullptr;
+    const uint64_t parsed = std::strtoull(bbCtxEnv, &end, 10);
+    if (end && *end == '\0') {
+      instance.BBCtxPlusOne = static_cast<size_t>(parsed) + 1;
+    } else {
+      std::fprintf(stderr, "PtaHook: invalid PTACXX_BB_CTX '%s', using 0\n", bbCtxEnv);
+      instance.BBCtxPlusOne = 1;
+    }
+  } else {
+    instance.BBCtxPlusOne = 1;
+  }
+  for (size_t i = 0; i < instance.BBCtxPlusOne; ++i)
+    instance.bbRecent.push_back(static_cast<VId>(-1));
+
+  if (const char *cgCtxEnv = std::getenv("PTACXX_CG_CTX")) {
+    char *end = nullptr;
+    const uint64_t parsed = std::strtoull(cgCtxEnv, &end, 10);
+    if (end && *end == '\0') {
+      instance.CGCtxPlusOne = static_cast<size_t>(parsed) + 1;
+    } else {
+      std::fprintf(stderr, "PtaHook: invalid PTACXX_CG_CTX '%s', using 0\n", cgCtxEnv);
+      instance.CGCtxPlusOne = 1;
+    }
+  } else {
+    instance.CGCtxPlusOne = 1;
+  }
+  for (size_t i = 0; i < instance.CGCtxPlusOne; ++i)
+    instance.cgRecent.push_back({static_cast<VId>(-1), Slice{0, 0}});
+}
+
 void PtaHook::stopAndConsume(){
   if (!bufferIndex) return;
+  std::span<PtrRecord> buffer_span(buffer, bufferIndex);
   for (size_t i = 0; i < bufferIndex; ++i) {
-    std::span<PtrRecord> buffer_span(buffer, bufferIndex);
     auto &record = buffer_span[i];
     switch (record.action) {
       case PTR_ACTION_ALLOCA: {
         if (!(Instance().mode & MODE_PTR_MASK)) break;
         auto addr = record.ptr;
+        assert(!Instance().scopeStack.back().second.uninitialized());
         Instance().ptrToVid[addr] = {
           record.vid, record.size};
-        Instance().scopeStack.back().second.push_back(addr);
+        auto newEnd = Instance().ScopeAllocaPool.size();
+        Instance().ScopeAllocaPool.push_back(addr);
+        Instance().scopeStack.back().second.end = newEnd;
         break;
       }
       case PTR_ACTION_HEAP_ALLOCA:
@@ -56,34 +127,124 @@ void PtaHook::stopAndConsume(){
         }
         break;
       }
+      case PTR_ACTION_ARG: {
+        if (!(Instance().mode & MODE_CG_MASK)) break;
+        AbstractArg a;
+        // record.size==1 marks a pointer argument
+        if (record.size == 1) {
+          if (record.ptr == 0) {
+            a.kind = NULL_PTR;
+          } else {
+            a.kind = PTR;
+            // a non-null pointer's vals hold all possible dynamic types at `ptr`
+            a.vals.start = Instance().PtrTypePool.size();
+            auto &cm = Instance().consMap;
+            auto it = cm.find(record.ptr);
+            if (it != cm.end())
+              Instance().PtrTypePool.insert(
+                  Instance().PtrTypePool.end(), it->second.begin(), it->second.end());
+            a.vals.end = Instance().PtrTypePool.size();
+          }
+        } else {
+          // scalar: classify by sign
+          int64_t v = static_cast<int64_t>(record.ptr);
+          a.kind = v > 0 ? POS_NUM : (v < 0 ? NEG_NUM : ZERO_NUM);
+        }
+        Instance().pendingArgs.push_back(std::move(a));
+        break;
+      }
+      case PTR_ACTION_ARGCLEAR: {
+        if (!(Instance().mode & MODE_CG_MASK)) break;
+        Instance().pendingArgs.clear();
+        break;
+      }
+      case PTR_ACTION_CONS: {
+        if (!(Instance().mode & MODE_CG_MASK)) break;
+        auto &types = Instance().consMap[record.ptr];
+        // drop any existing range smaller than or equal to the new construction
+        types.erase(std::remove_if(types.begin(), types.end(),
+                     [s = record.size](const PtrType &t) { return t.size <= s; }),
+                    types.end());
+        types.push_back(PtrType{record.vid, record.size});
+        break;
+      }
       case PTR_ACTION_BEGINSCOPE: {
-        if (!(Instance().mode & MODE_PTR_MASK)) break;
-        Instance().scopeStack.push_back({
-          record.vid,
-          std::vector<uint64_t>()
-        });
+        if (Instance().mode & MODE_PTR_MASK) {
+          const size_t cur = Instance().ScopeAllocaPool.size();
+          Instance().scopeStack.push_back(std::make_pair(record.vid, Slice{cur, cur}));
+        }
+        // consume the buffered arguments as this function's parameter values
+        if (Instance().mode & MODE_CG_MASK) {
+          auto &inst = Instance();
+          // full call context: a slice of this function's arg types in PtrTypePool
+          const size_t ctxStart = inst.PtrTypePool.size();
+          for (const auto &a : inst.pendingArgs)
+            if (a.kind == PTR)
+              for (size_t k = a.vals.start; k < a.vals.end; ++k)
+                inst.PtrTypePool.push_back(inst.PtrTypePool[k]);
+          inst.callContext.push_back(
+              {record.vid, PtrTypeSlice{ctxStart, inst.PtrTypePool.size()}});
+          // sliding window: store full AbstractArgs into ArgPool as a CgRecord
+          CgRecord rec;
+          rec.vid = record.vid;
+          rec.args.start = inst.ArgPool.size();
+          inst.ArgPool.insert(
+              inst.ArgPool.end(), inst.pendingArgs.begin(), inst.pendingArgs.end());
+          rec.args.end = inst.ArgPool.size();
+          inst.pendingArgs.clear();
+          // record the sliding call-context window (mirrors bbCoverage)
+          inst.cgRecent.erase(inst.cgRecent.begin());
+          inst.cgRecent.push_back(rec);
+          const size_t poolSize = inst.cgPool.size();
+          for (size_t j = 0; j < inst.CGCtxPlusOne; ++j)
+            inst.cgPool.push_back(inst.cgRecent[j]);
+          if (inst.cgCoverage.find(poolSize) == inst.cgCoverage.end())
+            inst.cgCoverage.insert(poolSize);
+          else inst.cgPool.resize(poolSize);
+        }
         break;
       }
       case PTR_ACTION_ENDSCOPE: {
-        if (!(Instance().mode & MODE_PTR_MASK)) break;
-        for (auto addr : Instance().scopeStack.back().second)
-          Instance().ptrToVid.erase(addr);
-        Instance().scopeStack.pop_back();
+        if (Instance().mode & MODE_PTR_MASK) {
+          auto &scope = Instance().scopeStack.back().second;
+          for (size_t k = scope.start; k < scope.end; ++k)
+            Instance().ptrToVid.erase(Instance().ScopeAllocaPool[k]);
+          Instance().scopeStack.pop_back();
+        }
+        if (Instance().mode & MODE_CG_MASK)
+          Instance().callContext.pop_back();
         break;
       }
       case PTR_ACTION_LANDING: {
-        if (!(Instance().mode & MODE_PTR_MASK)) break;
-        while (!Instance().scopeStack.empty() &&
-                !(Instance().scopeStack.back().first == record.vid)) {
-          for (auto addr : Instance().scopeStack.back().second)
-            Instance().ptrToVid.erase(addr);
-          Instance().scopeStack.pop_back();
+        if (Instance().mode & MODE_PTR_MASK) {
+          while (!Instance().scopeStack.empty() &&
+                  !(Instance().scopeStack.back().first == record.vid)) {
+            auto &scope = Instance().scopeStack.back().second;
+            for (size_t k = scope.start; k < scope.end; ++k)
+              Instance().ptrToVid.erase(Instance().ScopeAllocaPool[k]);
+            Instance().scopeStack.pop_back();
+          }
+        }
+        if (Instance().mode & MODE_CG_MASK) {
+          while (!Instance().callContext.empty() &&
+                  !(Instance().callContext.back().first == record.vid))
+            Instance().callContext.pop_back();
         }
         break;
       }
       case PTR_ACTION_BASICBLOCK: {
         if (!(Instance().mode & MODE_BB_MASK)) break;
-        Instance().bb_coverage.emplace(record.vid);
+        auto &instance = Instance();
+        const VId bbVid = static_cast<VId>(record.size);
+        instance.bbRecent.erase(instance.bbRecent.begin());
+        instance.bbRecent.push_back(bbVid);
+        const size_t allocaSize = instance.allocaPool.size();
+        for (size_t j = 0; j < instance.BBCtxPlusOne; ++j)
+          instance.allocaPool.push_back(instance.bbRecent[j]);
+        if (instance.bbCoverage.find(allocaSize) == instance.bbCoverage.end())
+          instance.bbCoverage.insert(allocaSize);
+        else instance.allocaPool.resize(allocaSize);
+        break;
       }
       default:
         throw std::runtime_error("Unknown action");
@@ -92,7 +253,12 @@ void PtaHook::stopAndConsume(){
   bufferIndex = 0;
 }
 
-void PtaHook::dump(const char *dumpPath) {
+void PtaHook::dump() {
+  const char *dumpPath = std::getenv("PTACXX_DUMP_PATH");
+  if (!dumpPath || !dumpPath[0]) {
+    std::fprintf(stderr, "PtaHook: PTACXX_DUMP_PATH is not set, skip dump\n");
+    return;
+  }
   FILE *f = fopen(dumpPath, "w");
   if (!f) {
     std::fprintf(stderr, "PtaHook: cannot open dump file '%s'\n", dumpPath);
@@ -103,7 +269,7 @@ void PtaHook::dump(const char *dumpPath) {
   };
 
   std::string buf;
-  buf.reserve(1024*1024);
+  buf.reserve(1024*1024*2);
   if (Instance().mode & MODE_PTR_MASK) {
     buf += "pts\n";
     std::vector<VId> keys;
@@ -131,11 +297,54 @@ void PtaHook::dump(const char *dumpPath) {
   }
   if (Instance().mode & MODE_BB_MASK) {
     buf += "basicBlock\n";
-    auto bbCoverage = std::vector<uint64_t>(
-      Instance().bb_coverage.begin(), Instance().bb_coverage.end());
-    std::sort(bbCoverage.begin(), bbCoverage.end());
-    for (auto &bb : bbCoverage)
-      buf += vidToString(bb) + "\n";
+    std::vector<size_t> windows(Instance().bbCoverage.begin(), Instance().bbCoverage.end());
+    std::sort(windows.begin(), windows.end(), BBRecordComp());
+    for (const auto &window : windows) {
+      auto it = Instance().bbCoverage.find(window);
+      for (size_t i = 0; i < Instance().BBCtxPlusOne; ++i) {
+        if (i) buf += " ";
+        buf += vidToString(Instance().allocaPool[*it + i]);
+      }
+      buf += "\n";
+      if (buf.size() >= 1024*1024) {
+        fwrite(buf.data(), 1, buf.size(), f);
+        buf.clear();
+      }
+    }
+  }
+  if (Instance().mode & MODE_CG_MASK) {
+    buf += "callGraph\n";
+    std::vector<size_t> windows(Instance().cgCoverage.begin(), Instance().cgCoverage.end());
+    std::sort(windows.begin(), windows.end(), CgRecordComp());
+    for (const auto &window : windows) {
+      auto it = Instance().cgCoverage.find(window);
+      for (size_t i = 0; i < Instance().CGCtxPlusOne; ++i) {
+        if (i) buf += ", ";
+        const auto &lvl = Instance().cgPool[*it + i];
+        buf += vidToString(lvl.vid);
+        for (size_t j = lvl.args.start; j < lvl.args.end; ++j) {
+          const auto &a = Instance().ArgPool[j];
+          buf += " ";
+          switch (a.kind) {
+            case POS_NUM:  buf += "POS";  break;
+            case ZERO_NUM: buf += "ZERO"; break;
+            case NEG_NUM:  buf += "NEG";  break;
+            case NULL_PTR: buf += "NULL"; break;
+            case PTR:
+              buf += "{";
+              for (size_t k = a.vals.start; k < a.vals.end; ++k)
+                buf += " " + std::to_string(Instance().PtrTypePool[k].vid);
+              buf += " }";
+              break;
+          }
+        }
+      }
+      buf += "\n";
+      if (buf.size() >= 1024*1024) {
+        fwrite(buf.data(), 1, buf.size(), f);
+        buf.clear();
+      }
+    }
   }
   if (!buf.empty()) fwrite(buf.data(), 1, buf.size(), f);
   fclose(f);
