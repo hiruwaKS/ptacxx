@@ -1,5 +1,6 @@
 #include "CallGraph.h"
 #include "LLVMUtils.h"
+#include "Error.h"
 
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Function.h>
@@ -22,6 +23,9 @@ void CallGraph::rebuild() {
 
 void CallGraph::buildCG(IndirectResolver indirectResolver) {
   if (_cgBuilt) return;
+  // reset partial state so a previously failed build can be retried cleanly
+  _CG.clear();
+  _edges.clear();
   for (Function &F : _irm.getModule()) {
     if (llvmSkip(&F)) continue;
     if (F.isDeclaration()) continue;
@@ -66,7 +70,7 @@ void CallGraph::buildCG(IndirectResolver indirectResolver) {
 }
 
 void CallGraph::buildReverseCG() {
-  assert(_cgBuilt);
+  ASSERT(_cgBuilt, "assertionviolation-reverse-cg-not-built", "buildReverseCG called before buildCG");
   if (_revBuilt) return;
   for (const CallEdge &edge : _edges) {
     if (edge.type == CallEdge::CallEdgeType::CALLANYTHING)
@@ -90,7 +94,7 @@ bool CallGraph::reachIter(llvm::Function *from, llvm::Function *to, bool ignoreU
       return true;
     }
     llvm::Function *callee = edge.callee;
-    assert(callee);
+    ASSERT(callee, "assertionviolation-call-edge-null-callee", "non-CALLANYTHING edge has null callee");
     if (callee == to) {
       path.push_back(i);
       return true;
@@ -106,8 +110,8 @@ bool CallGraph::reachIter(llvm::Function *from, llvm::Function *to, bool ignoreU
 }
 
 std::vector<CallEdge> CallGraph::reach(llvm::Function *from, llvm::Function *to, bool ignoreUnknown) const {
-  assert(_cgBuilt);
-  assert(from && to);
+  ASSERT(_cgBuilt, "assertionviolation-reach-before-build-cg", "reach called before buildCG");
+  ASSERT(from && to, "assertionviolation-reach-null-args", "null from/to passed to reach");
   std::unordered_set<llvm::Function*> visited;
   std::vector<size_t> path;
   if (reachIter(from, to, ignoreUnknown, path, visited)) {
@@ -119,24 +123,28 @@ std::vector<CallEdge> CallGraph::reach(llvm::Function *from, llvm::Function *to,
 }
 
 CallGraph::EdgesResult CallGraph::getOutEdges(llvm::Function *from) const {
-  assert(_cgBuilt);
+  ASSERT(_cgBuilt, "assertionviolation-get-out-edges-before-build-cg", "getOutEdges called before buildCG");
   auto it = _CG.find(from);
   if (it == _CG.end()) return llvm::ArrayRef<CallEdge>();
   size_t start = it->second.first;
   size_t end = it->second.second;
-  assert(end > start);
+  ASSERT(end > start, "assertionviolation-empty-edge-range", "empty edge range recorded in call graph");
   return llvm::ArrayRef<CallEdge>(&_edges[start], end - start);
 }
 
 CallGraph::EdgesResult CallGraph::getOutEdgesAtCallSite(llvm::CallBase *callsite) const {
-  assert(_cgBuilt&&callsite);
+  ASSERT(_cgBuilt, "assertionviolation-get-out-edges-at-callsite-before-build-cg",
+         "getOutEdgesAtCallSite called before buildCG");
+  ASSERT(callsite, "assertionviolation-get-out-edges-at-callsite-null",
+         "null callsite passed to getOutEdgesAtCallSite");
   Function *caller = callsite->getFunction();
-  assert(caller);
+  ASSERT(caller, "assertionviolation-callsite-no-parent", "callsite has no parent function");
   auto it = _CG.find(caller);
   if (it == _CG.end()) return llvm::ArrayRef<CallEdge>();
   size_t start = it->second.first;
   size_t end = it->second.second;
-  assert(end > start);
+  ASSERT(end > start, "assertionviolation-empty-edge-range-at-callsite",
+         "empty edge range recorded in call graph");
   size_t siteStart = end;
   for (size_t i = start; i < end; ++i) {
     if (_edges[i].callsite == callsite) {
@@ -161,7 +169,7 @@ CallGraph::EdgesResult CallGraph::getCallAnythingEdges() const {
 }
 
 CallGraph::EdgesResult CallGraph::getInEdges(llvm::Function *to) const {
-  assert(_revBuilt);
+  ASSERT(_revBuilt, "assertionviolation-reverse-cg-not-built-in-edges", "getInEdges called before buildReverseCG");
   auto it = _revCG.find(to);
   if (it == _revCG.end()) return llvm::ArrayRef<CallEdge>();
   return llvm::ArrayRef<CallEdge>(it->second);

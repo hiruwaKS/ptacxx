@@ -26,27 +26,3 @@ static constexpr int16_t PTR_ACTION_CONS        = 22;
 static constexpr uint64_t MODE_PTR_MASK         = 0x1;
 static constexpr uint64_t MODE_BB_MASK          = 0x2;
 static constexpr uint64_t MODE_CG_MASK          = 0x4;
-
-#include <ctime>
-#include <iostream>
-
-class ScopeTimer {
-private:
-  timespec start;
-  const char* name;
-  std::ostream& os;
-public:
-  explicit ScopeTimer(const char* n = "Elapsed", std::ostream& out = std::cout) 
-      : name(n), os(out) {
-    timespec_get(&start, TIME_UTC);
-  }
-  ~ScopeTimer() {
-    timespec now;
-    timespec_get(&now, TIME_UTC);
-    intmax_t us =
-        (now.tv_sec - start.tv_sec) * 1000000 +
-        (now.tv_nsec - start.tv_nsec) / 1000;
-    os << name << ": " 
-      << us << " μs" << std::endl;
-  }
-};

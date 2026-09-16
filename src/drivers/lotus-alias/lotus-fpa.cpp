@@ -126,9 +126,14 @@ class FPAQueryServer : public IncluPAWrapper {
 private:
   std::unique_ptr<CallGraphPass> _fpa;
 public:
-  FPAQueryServer(IRManager &irm) : IncluPAWrapper(irm) {}
+  FPAQueryServer() = default;
   ~FPAQueryServer() override;
 private:
+  std::string argParseAndInitLLVM(int argc, char **argv) override {
+    pInitLLVM = new InitLLVM(argc, argv);
+    cl::ParseCommandLineOptions(argc, argv, "global analysis\n");
+    return InputFilename;
+  }
   void init() override {
     Module &M = _irm.getModule();
     
@@ -148,8 +153,8 @@ private:
     else if (AnalysisType == 4)
       _fpa = std::make_unique<KELPPass>(&GlobalCtx);
     else {
-      cout << "unimplemnted analysis type, break\n";
-      exit(1);
+      throw ptacxx::ConfigError("configerror-unimplemented-analysis-type",
+                                "unimplemented analysis type");
     }
     _fpa->run(GlobalCtx.Modules);
 
@@ -162,18 +167,13 @@ private:
       for (auto *F : FuncSet) pts.push_back(F);
       return true;
     }
-    throw std::runtime_error("fpa can only resolve callsite");
+    throw ptacxx::AnalyzerError("analyzererror-fpa-callsite-only",
+                                "fpa can only resolve callsite");
   }
 };
 
 FPAQueryServer::~FPAQueryServer() = default;
 
 int main(int argc, char **argv) {
-  ptacxx::options::CGPatchCLIntercept().go(argc, argv);
-InitLLVM X(argc, argv);
-  cl::ParseCommandLineOptions(argc, argv, "global analysis\n");
-  
-  IRManager irm;
-  irm.addMainModule(InputFilename);
-  return FPAQueryServer(irm).run();
+  return FPAQueryServer().run(argc, argv);
 }

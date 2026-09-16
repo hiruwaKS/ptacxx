@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Common.h"
+#include "Error.h"
 
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalVariable.h>
@@ -9,7 +10,9 @@
 #include <llvm/Config/llvm-config.h>
 #include <llvm/Demangle/Demangle.h>
 #include <llvm/ADT/StringRef.h>
+#include <llvm/Support/Casting.h>
 
+#include <string>
 #include <utility>
 
 llvm::LLVMContext &getThreadLocalContext();
@@ -32,25 +35,40 @@ static inline bool llvmEndsWith(llvm::StringRef Str, llvm::StringRef Suffix) {
 
 /// @brief this will not skip all declarations, only the ones that start with "llvm."
 static inline bool llvmSkip(llvm::Function *F) {
+  ASSERT(F, "assertionviolation-llvm-skip-null-function", "null function passed to llvmSkip");
   if (F->isIntrinsic()) return true;
   llvm::StringRef Name = F->getName();
   return llvmStartsWith(Name, "llvm.");
 }
 
 static inline bool llvmSkip(llvm::GlobalVariable *GV) {
+  ASSERT(GV, "assertionviolation-llvm-skip-null-global", "null global variable passed to llvmSkip");
   llvm::StringRef Name = GV->getName();
   return llvmStartsWith(Name, "llvm.");
 }
 
 static inline llvm::Function *declFn(llvm::Module &M, const llvm::Twine &name, 
     llvm::FunctionType *FT) {
-  if (auto *F = M.getFunction(name.str())) return F;
+  const std::string Name = name.str();
+  if (llvm::GlobalValue *GV = M.getNamedValue(Name)) {
+    auto *F = llvm::dyn_cast<llvm::Function>(GV);
+    if (!F)
+      throw ptacxx::InputBitcodeError(
+          "inputbitcodeerror-declfn-name-not-function",
+          "name '" + Name + "' is already used by a non-function global");
+    if (F->getFunctionType() != FT)
+      throw ptacxx::InputBitcodeError(
+          "inputbitcodeerror-declfn-type-mismatch",
+          "existing function '" + Name + "' has a different type");
+    return F;
+  }
   return llvm::Function::Create(FT, llvm::GlobalValue::ExternalLinkage, 
     name, &M);
 }
 
 static inline llvm::raw_ostream& printDetailedValueId(llvm::raw_ostream &os,
     const llvm::Value *V) {
+  ASSERT(V, "assertionviolation-print-detailed-value-id-null", "null value passed to printDetailedValueId");
   switch (V->getValueID()) {
     case llvm::Value::ArgumentVal:
       os << "Arg";

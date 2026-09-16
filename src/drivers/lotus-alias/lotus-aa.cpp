@@ -56,11 +56,19 @@ LLVM_CL_IGNORE_WARNINGS_END
 class LotusAAQueryServer : public IncluPAWrapper {
 private:
   std::unique_ptr<legacy::PassManager> _passes;
-  std::unique_ptr<LotusAA> _lotusaa;
+  LotusAA *_lotusaa = nullptr;
 public:
-  LotusAAQueryServer(IRManager &irm) : IncluPAWrapper(irm) {}
+  LotusAAQueryServer() = default;
   ~LotusAAQueryServer() override;
 private:
+  std::string argParseAndInitLLVM(int argc, char **argv) override {
+    pInitLLVM = new InitLLVM(argc, argv);
+    PassRegistry &Registry = *PassRegistry::getPassRegistry();
+    initializeCore(Registry);
+    initializeAnalysis(Registry);
+    cl::ParseCommandLineOptions(argc, argv, "LotusAA Pointer Analysis Tool\n");
+    return InputFilename;
+  }
   void init() override {
     auto &M = _irm.getModule();
 
@@ -72,7 +80,7 @@ private:
           std::make_unique<ToolOutputFile>(OutputFilename, EC, sys::fs::OF_None);
       if (EC) {
         errs() << EC.message() << '\n';
-        exit(1);
+        throw ptacxx::FileSystemError("filesystemerror-output-file-open-failed", EC.message());
       }
     }
     raw_ostream &OS = Out ? Out->os() : outs();
@@ -85,8 +93,8 @@ private:
       errs() << "Global variables: " << M.getGlobalList().size() << "\n\n";
     }
     _passes = std::make_unique<legacy::PassManager>();
-    _lotusaa = std::make_unique<LotusAA>();
-    _passes->add(_lotusaa.get());
+    _lotusaa = new LotusAA();
+    _passes->add(_lotusaa);
     if (Verbose) {
       errs() << "Running LotusAA analysis...\n";
     }
@@ -132,7 +140,6 @@ private:
       }
       return true;
     }
-    assert("bad value");
     return false;
   }
 };
@@ -140,17 +147,5 @@ private:
 LotusAAQueryServer::~LotusAAQueryServer() = default;
 
 int main(int argc, char **argv) {
-  ptacxx::options::CGPatchCLIntercept().go(argc, argv);
-  InitLLVM X(argc, argv);
-
-  PassRegistry &Registry = *PassRegistry::getPassRegistry();
-  initializeCore(Registry);
-  initializeAnalysis(Registry);
-
-  cl::ParseCommandLineOptions(argc, argv, "LotusAA Pointer Analysis Tool\n");
-  
-  IRManager irm;
-  // Load IR module
-  irm.addMainModule(InputFilename);
-  return LotusAAQueryServer(irm).run();
+  return LotusAAQueryServer().run(argc, argv);
 }

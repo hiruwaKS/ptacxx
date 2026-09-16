@@ -26,6 +26,9 @@ using PointsToSet = llvm::SmallVector<AllocSite, 4>;
 using PointsToSetView = std::optional<llvm::ArrayRef<AllocSite>>;
 using AliasPair = std::pair<llvm::Value *, llvm::Value *>;
 using PTAliasResult = llvm::AliasResult;
+namespace ptacxx {
+using PTResult = llvm::AliasResult;
+}
 using CGPatchMap = llvm::DenseMap<llvm::Function *, llvm::SmallVector<llvm::Function *, 4>>;
 using CallTreeMap = llvm::DenseMap<llvm::Function *, llvm::SmallPtrSet<llvm::Function*, 16>>;
 using CallTree = std::pair<llvm::Function *, CallTreeMap>;
@@ -47,6 +50,12 @@ struct AliasIn     { Ptr a; Ptr b; };
 struct AliasSetIn  { Ptr ptr; };
 struct PtsIn       { Ptr ptr; };
 struct PtIn        { Ptr ptr; AllocSite obj; };
+/// A PtaHook .pts dump (v2) parsed into (pointer, expected target vids).
+/// File parsing lives in QueryInterface; the wrapper only consumes the array.
+struct PtsTestIn   {
+  std::vector<std::pair<Ptr, std::vector<VId>>> records;
+  bool consistent = false;
+};
 struct ReachableIn { llvm::Function *from; llvm::Function *to; bool ignoreUnknown; };
 struct CallOutEdgesIn { llvm::Function *f; bool ignoreCS; };
 struct CallInEdgesIn { llvm::Function *f; bool ignoreCS; };
@@ -57,18 +66,19 @@ struct AllAllocSitesIn {};
 struct CrashTestIn {};
 struct TestIn {};
 struct IRParseMessage { std::string message; };
-struct IRParseError  { std::string message; };
-struct SyntaxError   { std::string message; };
-struct AnalyzerError   { std::string message; };
 
 using PAQuery = std::variant<
-  SyntaxError,
-  IRParseMessage, IRParseError, 
-  AliasIn, AliasSetIn, PtsIn, PtIn, ReachableIn, CallOutEdgesIn, CallInEdgesIn, CallGraphIn,
+  IRParseMessage,
+  AliasIn, AliasSetIn, PtsIn, PtIn, PtsTestIn, ReachableIn, CallOutEdgesIn, CallInEdgesIn, CallGraphIn,
   CGReloadIn, AllocSitesIn, AllAllocSitesIn, CrashTestIn, TestIn>;
 
 struct AliasOut     { PTAliasResult result; };
 struct PtsOut       { PointsToSetView targets; };
+struct PtsTestOut   {
+  size_t total;
+  size_t fails;
+  std::vector<std::pair<VId, VId>> firstFails;
+};
 struct AliasSetOut  { std::set<llvm::Value *> * ptrs; };
 struct PtOut        { ModalityResult result; };
 struct ReachableOut { std::vector<ptacxx::CallEdge> calledges; };
@@ -80,8 +90,8 @@ struct CrashTestOut {};
 struct TestOut { std::string result; };
 
 using PAResponse = std::variant<
-  IRParseMessage, IRParseError, SyntaxError, AnalyzerError,
-  AliasOut, PtsOut, AliasSetOut, PtOut, ReachableOut, CallOutEdgesOut, CallInEdgesOut, CallGraphOut, AllocSitesOut, CrashTestOut, TestOut>;
+  IRParseMessage,
+  AliasOut, PtsOut, PtsTestOut, AliasSetOut, PtOut, ReachableOut, CallOutEdgesOut, CallInEdgesOut, CallGraphOut, AllocSitesOut, CrashTestOut, TestOut>;
 
 PAQuery parse(const std::string &input, IRManager &irm);
 std::string responseToString(const PAResponse &response, IRManager &irm);

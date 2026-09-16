@@ -37,16 +37,21 @@ LLVM_CL_IGNORE_WARNINGS_END
 class CCLyzerQueryServer : public UnifiPAWrapper {
 private:
 
-  std::unique_ptr<cclyzer::LegacyPointerAnalysis> _pa;
+  cclyzer::LegacyPointerAnalysis *_pa = nullptr;
   std::unique_ptr<llvm::legacy::PassManager> _passes;
 public:
-  CCLyzerQueryServer(IRManager &irm) : UnifiPAWrapper(irm) {}
+  CCLyzerQueryServer() = default;
   ~CCLyzerQueryServer() override;
 private:
+  std::string argParseAndInitLLVM(int argc, char **argv) override {
+    pInitLLVM = new InitLLVM(argc, argv);
+    cl::ParseCommandLineOptions(argc, argv, "cclyzer++ pointer analysis\n");
+    return InputFilename;
+  }
   void init() override {
-    _pa = std::make_unique<cclyzer::LegacyPointerAnalysis>();
+    _pa = new cclyzer::LegacyPointerAnalysis();
     _passes = std::make_unique<llvm::legacy::PassManager>();
-    _passes->add(_pa.get());
+    _passes->add(_pa);
     _passes->run(_irm.getModule());
   }
 
@@ -63,11 +68,5 @@ private:
 CCLyzerQueryServer::~CCLyzerQueryServer() = default;
 
 int main(int argc, char **argv) {
-  ptacxx::options::CGPatchCLIntercept().go(argc, argv);
-  InitLLVM X(argc, argv);
-  cl::ParseCommandLineOptions(argc, argv, "cclyzer++ pointer analysis\n");
-
-  auto irm = IRManager();
-  irm.addMainModule(InputFilename);
-  return CCLyzerQueryServer(irm).run();
+  return CCLyzerQueryServer().run(argc, argv);
 }

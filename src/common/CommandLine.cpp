@@ -1,5 +1,6 @@
 #include "CommandLine.h"
 #include "Common.h"
+#include "Error.h"
 
 #include <string>
 #include <vector>
@@ -16,7 +17,7 @@ CLIntercept::~CLIntercept() = default;
 #endif
 void CLIntercept::go(int &argc, char **&argv) {
   // TODO: when adding new parsing rules, please be careful
-  assert(argv && argc > 0);
+  ASSERT(argv, "assertionviolation-null-argv", "null argv");
   newArgv.clear();
 
   enum State {
@@ -29,12 +30,12 @@ void CLIntercept::go(int &argc, char **&argv) {
   newArgv.push_back(argv[0]);
 
   State state = Normal;
-  char *pendingToken;
+  char *pendingToken = nullptr;
   std::string pendingKey;
 
   for (int i = 1; i < argc; ++i) {
     char *token = argv[i];
-    assert(token && token[0]);
+    ASSERT(token, "assertionviolation-null-argv-token", "null argv token");
     enum TokenType {
       ShortOption,
       LongOption,
@@ -93,7 +94,8 @@ void CLIntercept::go(int &argc, char **&argv) {
     }
   }
 
-  if (state == ExpectValue) interceptOption(pendingKey, "");
+  if (state == ExpectValue)
+    if (!interceptOption(pendingKey, "")) newArgv.push_back(pendingToken);
 
   newArgv.push_back(nullptr);
   argc = static_cast<int>(newArgv.size()) - 1;

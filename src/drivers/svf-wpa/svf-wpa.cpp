@@ -37,9 +37,17 @@ private:
   std::unordered_map<const Value *, NodeID> _valueToNode;
   std::unordered_map<NodeID, const Value *> _nodeToValue;
 public:
-  SVFWPAQueryServer(IRManager &irm) : IncluPAWrapper(irm) {}
+  SVFWPAQueryServer() = default;
   ~SVFWPAQueryServer() override;
 private:
+  std::string argParseAndInitLLVM(int argc, char **argv) override {
+    auto moduleNameVec = OptionBase::parseOptions(argc, argv,
+        "Whole Program Points-to Analysis", "[options] <input-bitcode>");
+    if (moduleNameVec.size() != 1)
+      throw ptacxx::ConfigError("configerror-input-bitcode-count",
+                                "exactly one input bitcode file is required");
+    return moduleNameVec[0];
+  }
   void init() override {
     auto &M = _irm.getModule();
     LLVMModuleSet::buildSVFModule(M);
@@ -69,7 +77,9 @@ private:
   }
   bool getPointsToSet(Ptr value, PointsToSet &pts) override {
     auto *mset = LLVMModuleSet::getLLVMModuleSet();
-    if (!mset->hasValueNode(value)) throw std::runtime_error("fatal");
+    if (!mset->hasValueNode(value))
+      throw ptacxx::AnalyzerError("analyzererror-svf-value-node-missing",
+                                  "value has no SVF node");
     NodeID nodeId = mset->getValueNode(value);
     const PointsTo& ptids = _wpa->getPts(nodeId);
     for (auto objId: ptids) {
@@ -83,7 +93,8 @@ private:
   PTAliasResult getAliasResult(Ptr a, Ptr b) override {
     auto *mset = LLVMModuleSet::getLLVMModuleSet();
     if (!mset->hasValueNode(a) || !mset->hasValueNode(b))
-      throw std::runtime_error("fatal");
+      throw ptacxx::AnalyzerError("analyzererror-svf-alias-value-node-missing",
+                                  "alias operands have no SVF node");
     const PointsTo& raw1 = _wpa->getPts(mset->getValueNode(a));
     const PointsTo& raw2 = _wpa->getPts(mset->getValueNode(b));
     PointsTo exp1 = expandFIObjs(raw1);
@@ -97,15 +108,5 @@ private:
 SVFWPAQueryServer::~SVFWPAQueryServer() = default;
 
 int main(int argc, char **argv) {
-  ptacxx::options::CGPatchCLIntercept().go(argc, argv);
-  auto moduleNameVec = OptionBase::parseOptions(argc, argv,
-      "Whole Program Points-to Analysis", "[options] <input-bitcode>");
-  if (moduleNameVec.size() != 1) {
-    errs() << "Error: exactly one input bitcode file is required.\n";
-    exit(1);
-  }
-  std::string InputFilename = moduleNameVec[0];
-  auto irm = IRManager();
-  irm.addMainModule(InputFilename);
-  return SVFWPAQueryServer(irm).run();
+  return SVFWPAQueryServer().run(argc, argv);
 }

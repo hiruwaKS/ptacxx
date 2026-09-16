@@ -1,5 +1,6 @@
 #include "PointerSymbolTable.h"
 #include "common/Common.h"
+#include "common/Error.h"
 
 #include <stdexcept>
 #include <algorithm>
@@ -86,7 +87,8 @@ void PtaHook::stopAndConsume(){
       case PTR_ACTION_ALLOCA: {
         if (!(Instance().mode & MODE_PTR_MASK)) break;
         auto addr = record.ptr;
-        assert(!Instance().scopeStack.back().second.uninitialized());
+        ASSERT(!Instance().scopeStack.back().second.uninitialized(),
+               "assertionviolation-scope-top-uninitialized", "scope top is uninitialized");
         Instance().ptrToVid[addr] = {
           record.vid, record.size};
         auto newEnd = Instance().ScopeAllocaPool.size();
@@ -247,7 +249,7 @@ void PtaHook::stopAndConsume(){
         break;
       }
       default:
-        throw std::runtime_error("Unknown action");
+        ASSERT(false, "assertionviolation-unknown-pointer-action", "unknown action");
     }
   }
   bufferIndex = 0;
@@ -259,93 +261,113 @@ void PtaHook::dump() {
     std::fprintf(stderr, "PtaHook: PTACXX_DUMP_PATH is not set, skip dump\n");
     return;
   }
-  FILE *f = fopen(dumpPath, "w");
-  if (!f) {
-    std::fprintf(stderr, "PtaHook: cannot open dump file '%s'\n", dumpPath);
-    return;
-  }
   auto vidToString = [](VId v) {
     return std::to_string(v);
   };
+  constexpr size_t FLUSH_THRESHOLD = 1024 * 1024;
 
-  std::string buf;
-  buf.reserve(1024*1024*2);
   if (Instance().mode & MODE_PTR_MASK) {
-    buf += "pts\n";
-    std::vector<VId> keys;
-    keys.reserve(Instance().pts.size());
-    for (auto &[id, _] : Instance().pts) keys.push_back(id);
-    std::sort(keys.begin(), keys.end());
-    for (auto &k : keys) {
-      auto it = Instance().pts.find(k);
-      if (it == Instance().pts.end()) continue;
-      buf += vidToString(k);
-      for (auto &[t, ctx] : it->second) {
-        buf += " " + vidToString(t);
-        if (!ctx.empty()) {
-          buf += " {";
-          for (auto &c : ctx) buf += " " + vidToString(c);
-          buf += " }";
+    std::string path = std::string(dumpPath) + ".pts";
+    FILE *f = fopen(path.c_str(), "w");
+    if (!f) {
+      std::fprintf(stderr, "PtaHook: cannot open dump file '%s'\n", path.c_str());
+    } else {
+      std::string buf;
+      buf.reserve(1024*1024*2);
+      buf += "pts\n";
+      std::vector<VId> keys;
+      keys.reserve(Instance().pts.size());
+      for (auto &[id, _] : Instance().pts) keys.push_back(id);
+      std::sort(keys.begin(), keys.end());
+      for (auto &k : keys) {
+        auto it = Instance().pts.find(k);
+        if (it == Instance().pts.end()) continue;
+        // v2: "key;target,ctx,ctx;target,..." — no spaces/braces, single-char
+        // delimiters (';' separates targets, ',' separates a target's context).
+        buf += vidToString(k);
+        for (auto &[t, ctx] : it->second) {
+          buf += ";" + vidToString(t);
+          for (auto &c : ctx) buf += "," + vidToString(c);
+        }
+        buf += "\n";
+        if (buf.size() >= FLUSH_THRESHOLD) {
+          fwrite(buf.data(), 1, buf.size(), f);
+          buf.clear();
         }
       }
-      buf += "\n";
-      if (buf.size() >= 1024*1024) {
-        fwrite(buf.data(), 1, buf.size(), f);
-        buf.clear();
-      }
+      if (!buf.empty()) fwrite(buf.data(), 1, buf.size(), f);
+      fclose(f);
     }
   }
   if (Instance().mode & MODE_BB_MASK) {
-    buf += "basicBlock\n";
-    std::vector<size_t> windows(Instance().bbCoverage.begin(), Instance().bbCoverage.end());
-    std::sort(windows.begin(), windows.end(), BBRecordComp());
-    for (const auto &window : windows) {
-      auto it = Instance().bbCoverage.find(window);
-      for (size_t i = 0; i < Instance().BBCtxPlusOne; ++i) {
-        if (i) buf += " ";
-        buf += vidToString(Instance().allocaPool[*it + i]);
+    std::string path = std::string(dumpPath) + ".bb";
+    FILE *f = fopen(path.c_str(), "w");
+    if (!f) {
+      std::fprintf(stderr, "PtaHook: cannot open dump file '%s'\n", path.c_str());
+    } else {
+      std::string buf;
+      buf.reserve(1024*1024*2);
+      buf += "basicBlock\n";
+      std::vector<size_t> windows(Instance().bbCoverage.begin(), Instance().bbCoverage.end());
+      std::sort(windows.begin(), windows.end(), BBRecordComp());
+      for (const auto &window : windows) {
+        auto it = Instance().bbCoverage.find(window);
+        for (size_t i = 0; i < Instance().BBCtxPlusOne; ++i) {
+          if (i) buf += " ";
+          buf += vidToString(Instance().allocaPool[*it + i]);
+        }
+        buf += "\n";
+        if (buf.size() >= FLUSH_THRESHOLD) {
+          fwrite(buf.data(), 1, buf.size(), f);
+          buf.clear();
+        }
       }
-      buf += "\n";
-      if (buf.size() >= 1024*1024) {
-        fwrite(buf.data(), 1, buf.size(), f);
-        buf.clear();
-      }
+      if (!buf.empty()) fwrite(buf.data(), 1, buf.size(), f);
+      fclose(f);
     }
   }
   if (Instance().mode & MODE_CG_MASK) {
-    buf += "callGraph\n";
-    std::vector<size_t> windows(Instance().cgCoverage.begin(), Instance().cgCoverage.end());
-    std::sort(windows.begin(), windows.end(), CgRecordComp());
-    for (const auto &window : windows) {
-      auto it = Instance().cgCoverage.find(window);
-      for (size_t i = 0; i < Instance().CGCtxPlusOne; ++i) {
-        if (i) buf += ", ";
-        const auto &lvl = Instance().cgPool[*it + i];
-        buf += vidToString(lvl.vid);
-        for (size_t j = lvl.args.start; j < lvl.args.end; ++j) {
-          const auto &a = Instance().ArgPool[j];
-          buf += " ";
-          switch (a.kind) {
-            case POS_NUM:  buf += "POS";  break;
-            case ZERO_NUM: buf += "ZERO"; break;
-            case NEG_NUM:  buf += "NEG";  break;
-            case NULL_PTR: buf += "NULL"; break;
-            case PTR:
-              buf += "{";
-              for (size_t k = a.vals.start; k < a.vals.end; ++k)
-                buf += " " + std::to_string(Instance().PtrTypePool[k].vid);
-              buf += " }";
-              break;
+    std::string path = std::string(dumpPath) + ".cg";
+    FILE *f = fopen(path.c_str(), "w");
+    if (!f) {
+      std::fprintf(stderr, "PtaHook: cannot open dump file '%s'\n", path.c_str());
+    } else {
+      std::string buf;
+      buf.reserve(1024*1024*2);
+      buf += "callGraph\n";
+      std::vector<size_t> windows(Instance().cgCoverage.begin(), Instance().cgCoverage.end());
+      std::sort(windows.begin(), windows.end(), CgRecordComp());
+      for (const auto &window : windows) {
+        auto it = Instance().cgCoverage.find(window);
+        for (size_t i = 0; i < Instance().CGCtxPlusOne; ++i) {
+          if (i) buf += ", ";
+          const auto &lvl = Instance().cgPool[*it + i];
+          buf += vidToString(lvl.vid);
+          for (size_t j = lvl.args.start; j < lvl.args.end; ++j) {
+            const auto &a = Instance().ArgPool[j];
+            buf += " ";
+            switch (a.kind) {
+              case POS_NUM:  buf += "POS";  break;
+              case ZERO_NUM: buf += "ZERO"; break;
+              case NEG_NUM:  buf += "NEG";  break;
+              case NULL_PTR: buf += "NULL"; break;
+              case PTR:
+                buf += "{";
+                for (size_t k = a.vals.start; k < a.vals.end; ++k)
+                  buf += " " + std::to_string(Instance().PtrTypePool[k].vid);
+                buf += " }";
+                break;
+            }
           }
         }
+        buf += "\n";
+        if (buf.size() >= FLUSH_THRESHOLD) {
+          fwrite(buf.data(), 1, buf.size(), f);
+          buf.clear();
+        }
       }
-      buf += "\n";
-      if (buf.size() >= 1024*1024) {
-        fwrite(buf.data(), 1, buf.size(), f);
-        buf.clear();
-      }
+      if (!buf.empty()) fwrite(buf.data(), 1, buf.size(), f);
+      fclose(f);
     }
   }
-  if (!buf.empty()) fwrite(buf.data(), 1, buf.size(), f);
-  fclose(f);
 }

@@ -1,4 +1,31 @@
 // don't run any middle-end optimization after running this instrument tool
+//
+// instrument: inject PTACXX hook calls into an LLVM module and wrap main().
+//
+// The input module must define main(). Mode-specific probes are inserted on
+// functions/basic blocks; they call the hook runtime (__hook_init,
+// __hook_push, __hook_dump, __register_globals), which is provided by
+// libhook.so. main() is renamed to __orig_main and replaced by a wrapper
+// that calls __hook_init(mode), runs the original main, then __hook_dump().
+//
+// Usage:
+//   instrument <ir-path> -o <out.ll|out.bc> [-mode-ptr] [-mode-bb] [-mode-cg]
+//
+// Modes are independent and can be combined:
+//   -mode-ptr   pointer/points-to probes (args, allocas, loads, heap)
+//   -mode-bb    basic-block coverage
+//   -mode-cg    call-graph context (call arguments flattened and pushed)
+//
+// Build and run the instrumented module:
+//   clang++ out.bc -o app $(llvm-config --libs --system-libs --ldflags) \
+//       -lpthread -lm /path/to/libhook.so
+//   PTACXX_DUMP_PATH=<prefix> ./app
+//
+// Runtime environment (read by libhook.so):
+//   PTACXX_DUMP_PATH  dump prefix; writes <prefix>.pts/.bb/.cg per mode
+//   PTACXX_K          context sensitivity for -mode-ptr
+//   PTACXX_BB_CTX     context window for -mode-bb
+//   PTACXX_CG_CTX     context window for -mode-cg
 
 #include "common/IRManager.h"
 #include "common/LLVMUtils.h"
@@ -36,7 +63,9 @@ int main(int argc, char *argv[]) {
   cl::ParseCommandLineOptions(argc, argv);
   auto irm = IRManager();
   irm.addMainModule(IRPath);
-  if (!irm.getIRStat().hasMain) throw std::runtime_error("no main function found");
+  if (!irm.getIRStat().hasMain)
+    throw ptacxx::InputBitcodeError("inputbitcodeerror-no-main-function-found",
+                                    "no main function found");
   auto &M = irm.getModule();
   auto &Ctx = M.getContext();
   auto &DL = M.getDataLayout();
@@ -53,7 +82,6 @@ int main(int argc, char *argv[]) {
   std::vector<Function *> functions;
   for (auto &F : M.functions()) {
     if (llvmSkip(&F)) continue;
-    if (F.isDeclaration()) continue;
     functions.push_back(&F);
   }
 
@@ -90,6 +118,7 @@ int main(int argc, char *argv[]) {
 
     std::vector<llvm::BasicBlock::iterator> beforeFirstPt;
     for (auto F : functions) {
+      if (F->isDeclaration()) continue;
       auto &entryBB = F->getEntryBlock();
       for (auto &BB : *F) {
         auto firstPt = BB.getFirstInsertionPt();
@@ -149,19 +178,25 @@ int main(int argc, char *argv[]) {
                 else
                   argVal = CONSTI64(0);
                 CallInst::Create(hookPushFn, {CONSTI32(0), CONSTI16(PTR_ACTION_ARG),
-                  argVal, CONSTI64(isPtr)}, "", I.getIterator());
+                  argVal, CONSTI64(isPtr)}, "", LLVM_INS(I.getIterator()));
               };
               if (auto *CB = dyn_cast<CallBase>(&I)) {
                 // 2.3.x clear any stale args, then push all arguments before the
                 // call; hook buffers them and consumes them at callee's BEGINSCOPE.
                 CallInst::Create(hookPushFn, {CONSTI32(0), CONSTI16(PTR_ACTION_ARGCLEAR),
-                  CONSTI64(0), CONSTI64(0)}, "", I.getIterator());
+                  CONSTI64(0), CONSTI64(0)}, "", LLVM_INS(I.getIterator()));
                 for (auto &arg : CB->args())
                   emitArgFlat(emitArgFlat, arg);
               }
             }
             if (ModePtr && I.getType()->isPointerTy()) {
-              auto instPos = reachFirstPt ? I.getNextNode()->getIterator() : firstPt;
+              llvm::BasicBlock::iterator instPos;
+              if (auto *II = dyn_cast<InvokeInst>(&I))
+                instPos = II->getNormalDest()->getFirstInsertionPt();
+              else if (auto *CBI = dyn_cast<CallBrInst>(&I))
+                instPos = CBI->getDefaultDest()->getFirstInsertionPt();
+              else
+                instPos = reachFirstPt ? I.getNextNode()->getIterator() : firstPt;
               if (isa<AllocaInst>(I)) {
                 // 2.3.3 alloca case (no probe)
                 auto *AI = cast<AllocaInst>(&I);
@@ -188,16 +223,17 @@ int main(int argc, char *argv[]) {
                 // 2.3.4 probe case
                 emitPointerProbe(&I, instPos);
                 if (auto *CB = dyn_cast<CallBase>(&I)) {
-                  if (CB->isNoBuiltin() || !CB->getCalledFunction()) continue;
-                  // 2.3.5 heap alloca case
-                  if (auto size = dynMem.getDynamicAllocationSize(CB)) {
-                    auto cbid = irm.valueToVId(CB);
-                    CallInst::Create(hookPushFn, {VID(cbid), CONSTI16(PTR_ACTION_HEAP_ALLOCA), 
-                      ensureI64(CB, instPos), size}, "", LLVM_INS(instPos));
-                  } else if (auto freedPtr = dynMem.getFreedOperand(CB)) {
-                    auto cbid = irm.valueToVId(CB);
-                    CallInst::Create(hookPushFn, {VID(cbid), CONSTI16(PTR_ACTION_HEAP_FREE), 
-                      ensureI64(freedPtr, instPos), CONSTI64(0)}, "", LLVM_INS(instPos));
+                  if (!CB->isNoBuiltin() && CB->getCalledFunction()) {
+                    // 2.3.5 heap alloca case
+                    if (auto size = dynMem.getDynamicAllocationSize(CB)) {
+                      auto cbid = irm.valueToVId(CB);
+                      CallInst::Create(hookPushFn, {VID(cbid), CONSTI16(PTR_ACTION_HEAP_ALLOCA), 
+                        ensureI64(CB, instPos), size}, "", LLVM_INS(instPos));
+                    } else if (auto freedPtr = dynMem.getFreedOperand(CB)) {
+                      auto cbid = irm.valueToVId(CB);
+                      CallInst::Create(hookPushFn, {VID(cbid), CONSTI16(PTR_ACTION_HEAP_FREE), 
+                        ensureI64(freedPtr, instPos), CONSTI64(0)}, "", LLVM_INS(instPos));
+                    }
                   }
                 }
               }
@@ -242,6 +278,17 @@ int main(int argc, char *argv[]) {
         ConstantExpr::getPtrToInt(GV, I64Ty), ConstantInt::get(I64Ty, globalSize)}, "", entryBB);
       ++cnt;
     }
+    // Register every function (declarations included) as a 1-byte code region at
+    // its entry address, so a probe whose value is a function pointer falls
+    // inside a known region and is recorded as a points-to edge to the target
+    // function. A function pointer always points at the entry, and a function's
+    // size cannot be known at the IR level, hence size = 1.
+    for (auto *F : functions) {
+      auto vid = irm.valueToVId(F);
+      CallInst::Create(hookPushFn, {VID(vid), CONSTI16(PTR_ACTION_REGION), 
+        ConstantExpr::getPtrToInt(F, I64Ty), CONSTI64(1)}, "", entryBB);
+      ++cnt;
+    }
     ReturnInst::Create(Ctx, ConstantInt::get(I32Ty, static_cast<uint64_t>(cnt)), entryBB);
   }
 
@@ -255,7 +302,8 @@ int main(int argc, char *argv[]) {
   //   return result;
   // }
   auto *origMainFn = M.getFunction("main");
-  if (!origMainFn) report_fatal_error("no main function");
+  if (!origMainFn)
+    throw ptacxx::InputBitcodeError("inputbitcodeerror-no-main-function", "no main function");
   auto *mainTy = origMainFn->getFunctionType();
   origMainFn->setName("__orig_main");
   auto *newMainFn = declFn(M, "main", mainTy);

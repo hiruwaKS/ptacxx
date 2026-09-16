@@ -1,5 +1,6 @@
 #include "QueryInterface.h"
 #include "LLVMUtils.h"
+#include "Error.h"
 
 #include <llvm/ADT/DenseSet.h>
 #include <llvm/ADT/Hashing.h>
@@ -38,11 +39,15 @@ static std::string encode(const std::string &s);
 [[maybe_unused]] static std::string encodeIfNecessary(const std::string &s);
 
 int toIntStrict(const std::string &s) {
-  std::size_t pos;
-  int val = std::stoi(s, &pos);
-  if (pos != s.length())
-    throw std::runtime_error("Invalid integer in: " + s);
-  return val;
+  std::size_t pos = 0;
+  try {
+    int val = std::stoi(s, &pos);
+    if (pos == s.length()) return val;
+  } catch (const std::exception &) {
+    // fall through to the typed error below
+  }
+  throw ptacxx::VidNotFound("vidnotfound-invalid-integer",
+                            "invalid integer in: " + s);
 }
 
 std::string stripPrefix(const std::string &s) {
@@ -97,7 +102,7 @@ VId parseVid(const std::string& vid, IRManager &irm) {
       }
     }
     if (notSilenced.empty())
-      throw std::runtime_error("not found: " + vid);
+      throw ptacxx::VidNotFound("vidnotfound-global-name-not-found", "not found: " + vid);
     if (notSilenced.size() == 1)
       return *notSilenced.begin();
     std::string buf;
@@ -113,9 +118,54 @@ VId parseVid(const std::string& vid, IRManager &irm) {
       }
     }
     os.flush();
-    throw std::runtime_error(buf);  
+    throw ptacxx::VidNotFound("vidnotfound-global-name-ambiguous", buf);  
   }
   return static_cast<int32_t>(toIntStrict(vid));
+}
+
+/// Resolve a vid string to a Value; throws a shared VidNotFound on failure.
+static llvm::Value *requireValue(const std::string &vidStr, IRManager &irm,
+                                 const std::string &msg = "vid not found") {
+  llvm::Value *V = irm.vidToValue(parseVid(vidStr, irm));
+  if (!V) throw ptacxx::VidNotFound("vidnotfound-vid-not-found", msg);
+  return V;
+}
+
+/// Resolve a vid string to a Function; throws a shared VidNotFound on failure.
+static llvm::Function *requireFunction(const std::string &vidStr, IRManager &irm,
+                                       const std::string &msg =
+                                           "vid not found or not a function vid") {
+  auto *F = llvm::dyn_cast_or_null<llvm::Function>(
+      irm.vidToValue(parseVid(vidStr, irm)));
+  if (!F) throw ptacxx::VidNotFound("vidnotfound-vid-not-found", msg);
+  return F;
+}
+
+/// Resolve a vid string to an identified StructType.
+static llvm::StructType *requireStruct(const std::string &vidStr, IRManager &irm,
+                                       const std::string &msg = "vid not found") {
+  auto *ST = irm.vidToIdStruct(parseVid(vidStr, irm));
+  if (!ST) throw ptacxx::VidNotFound("vidnotfound-vid-not-found", msg);
+  return ST;
+}
+
+/// Require an already-resolved global entry to be a Function.
+static llvm::Function *requireFunction(const GlobalEntry &entry, IRManager &irm,
+                                       const std::string &msg =
+                                           "vid not found or not a function vid") {
+  auto *F = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(entry.id));
+  if (!F) throw ptacxx::VidNotFound("vidnotfound-vid-not-found", msg);
+  return F;
+}
+
+/// Resolve a vid to either a Value or an identified StructType.
+static std::pair<llvm::Value *, llvm::StructType *>
+requireValueOrStruct(VId vid, IRManager &irm,
+                     const std::string &msg = "vid not found") {
+  llvm::Value *V = irm.vidToValue(vid);
+  llvm::StructType *ST = V ? nullptr : irm.vidToIdStruct(vid);
+  if (!ST && !V) throw ptacxx::VidNotFound("vidnotfound-vid-not-found", msg);
+  return {V, ST};
 }
 
 std::string modalityToString(ModalityResult modal) {
@@ -155,7 +205,9 @@ static std::optional<std::string_view> isKeyPoint(const std::string &buf, size_t
 
 static std::string_view readRecord(const std::string &buf, size_t pos,
                                    const std::string &prefix) {
-  assert(isKeyPoint(buf, pos, prefix).has_value());
+  if (!isKeyPoint(buf, pos, prefix).has_value())
+    throw ptacxx::NoteRelated("noterelated-record-pos-not-key-point",
+                              "pos is not a key point");
   if (pos == buf.size()) return std::string_view(buf).substr(pos, 0);
   size_t end = pos + 1;
   while (end < buf.size() && !isKeyPoint(buf, end, prefix).has_value()) ++end;
@@ -267,10 +319,14 @@ static std::string getNoteFile(const std::string &debugPath, bool &found,
     if (!in) {
       if (createIfMissing) {
         std::ofstream out(path);
-        if (!out) throw std::runtime_error("cannot create " + path);
+        if (!out)
+          throw ptacxx::FileSystemError("filesystemerror-note-file-create-failed",
+                                        "cannot create " + path);
         out << debugPath << "\n";
         out.close();
-        if (!out) throw std::runtime_error("cannot write " + path);
+        if (!out)
+          throw ptacxx::FileSystemError("filesystemerror-note-file-write-failed",
+                                        "cannot write " + path);
         found = true;
       }
       break;
@@ -343,27 +399,30 @@ static llvm::SmallVector<NodeKey, 4> getWhens(std::string_view record,
 void loadCGPatch(IRManager &irm, CGPatchMap &out) {
   if (ptacxx::options::CGPatchPath.empty()) return;
   std::ifstream in(ptacxx::options::CGPatchPath);
-  if (!in) throw std::runtime_error("cannot open " + ptacxx::options::CGPatchPath);
+  if (!in)
+    throw ptacxx::FileSystemError("filesystemerror-cgpatch-open-failed",
+                                  "cannot open " + ptacxx::options::CGPatchPath);
   out.clear();
   std::string caller, callee;
   while (std::getline(in, caller)) {
     if (caller.empty()) continue;
-    if (!std::getline(in, callee) || !callee.size()) throw std::runtime_error("missing callee");
-    auto *f1 = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(irm.getGlobal(caller).id));
-    auto *f2 = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(irm.getGlobal(callee).id));
-    if (f1 && f2) out[f1].push_back(f2);
-    else throw std::runtime_error("vid not found");
+    if (!std::getline(in, callee) || !callee.size())
+      throw ptacxx::SemanticError("semanticerror-cgpatch-missing-callee", "missing callee");
+    auto *f1 = requireFunction(irm.getGlobal(caller), irm);
+    auto *f2 = requireFunction(irm.getGlobal(callee), irm);
+    out[f1].push_back(f2);
   }
 }
 
 PAQuery parse(const std::string &input, IRManager &irm) {
-  try {
+  {
     auto [cmd, unread] = eatToken(input);
     if (cmd.empty())
-      return PAQuery{SyntaxError{"empty input"}};
+      throw ptacxx::SyntaxError("syntaxerror-empty-input", "empty input");
 
     if (cmd == "help" || cmd == "h" || cmd == "?") {
-      if (!unread.empty()) return PAQuery{SyntaxError{"too many arguments"}};
+      if (!unread.empty())
+        throw ptacxx::SyntaxError("syntaxerror-help-too-many-arguments", "too many arguments");
       return PAQuery{IRParseMessage{
           "commands:\n"
           "  stat | s                  show IR metadata and statistics\n"
@@ -402,7 +461,8 @@ PAQuery parse(const std::string &input, IRManager &irm) {
     }
 
     if (cmd == "stat" || cmd == "s") {
-      if (!unread.empty()) return PAQuery{SyntaxError{"too many arguments"}};
+      if (!unread.empty())
+        throw ptacxx::SyntaxError("syntaxerror-stat-too-many-arguments", "too many arguments");
       std::string buf;
       llvm::raw_string_ostream os{buf};
       irm.printStat(os).flush();
@@ -449,7 +509,7 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       if (arg1 == "-c") {
         auto [countStr, unread3] = eatToken(unread2);
         if (countStr.empty() || stripPrefix(unread3).size())
-          return PAQuery{SyntaxError{"<vid> -c <i>"}};
+          throw ptacxx::SyntaxError("syntaxerror-vid-range-usage", "<vid> -c <i>");
         int32_t n = toIntStrict(countStr);
         auto start = parseVid(cmd, irm);
         for (int32_t i = 0; i < n; i++) handleVid(start + i, found);
@@ -463,90 +523,133 @@ PAQuery parse(const std::string &input, IRManager &irm) {
           remaining = unread2;
           std::tie(arg1, unread2) = eatToken(remaining);
           if (vidStr == "-c")
-            return PAQuery{SyntaxError{"<vid> -c <i>"}};
+            throw ptacxx::SyntaxError("syntaxerror-vid-range-usage-in-list", "<vid> -c <i>");
         }
       }
       printSilence(silenced);
       os.flush();
       if (buf.size() && found) return PAQuery{IRParseMessage{buf}};
-      return PAQuery{IRParseError{"vid not found"}};
+      throw ptacxx::VidNotFound("vidnotfound-vid-not-found", "vid not found");
     }
     
     if (cmd == "site") {
       auto [vidStr, unread2] = eatToken(unread);
       if (vidStr.empty()) return PAQuery{AllAllocSitesIn{}};
       if (!unread2.empty())
-        return PAQuery{SyntaxError{"site [function]"}};
-      if (auto F = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(parseVid(vidStr, irm))))
-        return PAQuery{AllocSitesIn{F}};
-      return PAQuery{IRParseError{"vid not found or not a function vid"}};
+        throw ptacxx::SyntaxError("syntaxerror-site-usage", "site [function]");
+      auto *F = requireFunction(vidStr, irm);
+      return PAQuery{AllocSitesIn{F}};
     }
 
     if (cmd == "cg") {
       auto [vidStr, unread2] = eatToken(unread);
       auto [nStr, unread3] = eatToken(unread2);
       if (vidStr.empty() || unread3.size())
-        return PAQuery{SyntaxError{"cg <vid> [n=5]"}};
+        throw ptacxx::SyntaxError("syntaxerror-cg-usage", "cg <vid> [n=5]");
       unsigned n = 5;
       if (!nStr.empty()) n = static_cast<unsigned>(toIntStrict(nStr));
-      if (auto F = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(parseVid(vidStr, irm)))) {
-        return PAQuery{CallGraphIn{F, n, stdSilence, llvmSilence}};
-      }
-      return PAQuery{IRParseError{"vid not found or not a function vid"}};
+      auto *F = requireFunction(vidStr, irm);
+      return PAQuery{CallGraphIn{F, n, stdSilence, llvmSilence}};
     }
 
     if (cmd == "st") {
       auto [vidStr, unread2] = eatToken(unread);
       if (vidStr.empty() || unread2.size())
-        return PAQuery{SyntaxError{"st <vid>"}};
-      auto vid = parseVid(vidStr, irm);
+        throw ptacxx::SyntaxError("syntaxerror-st-usage", "st <vid>");
+      auto *ST = requireStruct(vidStr, irm);
       std::string buf;
       llvm::raw_string_ostream os{buf};
-      if (auto *ST = irm.vidToIdStruct(vid))
-        irm.printIdStructType(os, ST, IRManager::PRT_DEBUG);
+      irm.printIdStructType(os, ST, IRManager::PRT_DEBUG);
       os.flush();
-      if (buf.size()) return PAQuery{IRParseMessage{buf}};
-      return PAQuery{IRParseError{"vid not found"}};
+      return PAQuery{IRParseMessage{buf}};
     }
 
     if (cmd == "a" || cmd == "alias") {
       auto [aStr, unread2] = eatToken(unread);
       auto [bStr, unread3] = eatToken(unread2);
       if (aStr.empty() || bStr.empty() || unread3.size())
-        return PAQuery{SyntaxError{"alias <vid> <vid>"}};
-      auto a = irm.vidToValue(parseVid(aStr, irm));
-      auto b = irm.vidToValue(parseVid(bStr, irm));
-      if (!a || !b) return PAQuery{IRParseError{"vid not found"}};
+        throw ptacxx::SyntaxError("syntaxerror-alias-usage", "alias <vid> <vid>");
+      auto *a = requireValue(aStr, irm);
+      auto *b = requireValue(bStr, irm);
       return PAQuery{AliasIn{a, b}};
     }
 
     if (cmd == "aliasset") {
       auto [ptrStr, unread2] = eatToken(unread);
       if (ptrStr.empty() || unread2.size())
-        return PAQuery{SyntaxError{"aliasset <vid>"}};
-      if (auto ptr = irm.vidToValue(parseVid(ptrStr, irm)))
-        return PAQuery{AliasSetIn{ptr}};
-      return PAQuery{IRParseError{"vid not found"}};
+        throw ptacxx::SyntaxError("syntaxerror-aliasset-usage", "aliasset <vid>");
+      auto *ptr = requireValue(ptrStr, irm);
+      return PAQuery{AliasSetIn{ptr}};
     }
 
     if (cmd == "pts") {
       auto [ptrStr, unread2] = eatToken(unread);
       if (ptrStr.empty() || unread2.size())
-        return PAQuery{SyntaxError{"pts <vid>"}};
-      if (auto ptr = irm.vidToValue(parseVid(ptrStr, irm)))
-        return PAQuery{PtsIn{ptr}};
-      return PAQuery{IRParseError{"vid not found"}};
+        throw ptacxx::SyntaxError("syntaxerror-pts-usage", "pts <vid>");
+      auto *ptr = requireValue(ptrStr, irm);
+      return PAQuery{PtsIn{ptr}};
     }
 
     if (cmd == "pt") {
       auto [ptrStr, unread2] = eatToken(unread);
       auto [objStr, unread3] = eatToken(unread2);
       if (ptrStr.empty() || objStr.empty() || unread3.size())
-        return PAQuery{SyntaxError{"pt <ptr> <obj>"}};
-      auto ptr = irm.vidToValue(parseVid(ptrStr, irm));
-      auto obj = irm.vidToValue(parseVid(objStr, irm));
-      if (!ptr || !obj) return PAQuery{IRParseError{"vid not found"}};
+        throw ptacxx::SyntaxError("syntaxerror-pt-usage", "pt <ptr> <obj>");
+      auto *ptr = requireValue(ptrStr, irm);
+      auto *obj = requireValue(objStr, irm);
       return PAQuery{PtIn{ptr, obj}};
+    }
+
+    if (cmd == "pts-test") {
+      auto [pathStr, unread2] = eatToken(unread);
+      if (pathStr.empty())
+        throw ptacxx::SyntaxError("syntaxerror-pts-test-usage",
+                                  "pts-test <dump-file-path> [-c]");
+      auto [flagStr, unread3] = eatToken(unread2);
+      bool consistent = false;
+      if (flagStr == "-c") {
+        if (stripPrefix(unread3).size())
+          throw ptacxx::SyntaxError("syntaxerror-pts-test-usage",
+                                    "pts-test <dump-file-path> [-c]");
+        consistent = true;
+      } else if (!flagStr.empty()) {
+        throw ptacxx::SyntaxError("syntaxerror-pts-test-usage",
+                                  "pts-test <dump-file-path> [-c]");
+      }
+      std::ifstream in(pathStr);
+      if (!in)
+        throw ptacxx::FileSystemError("filesystemerror-pts-dump-open-failed",
+                                      "cannot open pts dump '" + pathStr + "'");
+      std::vector<std::pair<Ptr, std::vector<VId>>> records;
+      std::string line;
+      // The dump starts with a "pts" magic line; check and ignore it.
+      if (std::getline(in, line) && line != "pts")
+        in.seekg(0);
+      while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        // v2 record: "key;target,ctx,...;target,..."
+        std::vector<std::string> segs;
+        size_t start = 0;
+        while (true) {
+          const size_t pos = line.find(';', start);
+          segs.push_back(line.substr(
+              start, pos == std::string::npos ? std::string::npos : pos - start));
+          if (pos == std::string::npos) break;
+          start = pos + 1;
+        }
+        if (segs.empty() || segs[0].empty()) continue;
+        Ptr ptr = irm.vidToValue(parseVid(segs[0], irm));
+        if (!ptr) continue;
+        std::vector<VId> targets;
+        for (size_t i = 1; i < segs.size(); ++i) {
+          if (segs[i].empty()) continue;
+          const size_t comma = segs[i].find(',');
+          const std::string tstr = segs[i].substr(0, comma);
+          targets.push_back(parseVid(tstr, irm));
+        }
+        records.emplace_back(ptr, std::move(targets));
+      }
+      return PAQuery{PtsTestIn{std::move(records), consistent}};
     }
 
     if (cmd == "reach") {
@@ -554,88 +657,92 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       auto [toStr, unread3] = eatToken(unread2);
       auto [iStr, unread4] = eatToken(unread3);
       if (fromStr.empty() || toStr.empty() || (iStr.size() && iStr != "i"))
-        return PAQuery{SyntaxError{"reach <from> <to> <i>"}};
-      if (auto from = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(parseVid(fromStr, irm))))
-        if (auto to = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(parseVid(toStr, irm))))
-          return PAQuery{ReachableIn{from, to, !!iStr.size()}};
-      return PAQuery{IRParseError{"vid(s) not found or not function vid(s)"}};
+        throw ptacxx::SyntaxError("syntaxerror-reach-usage", "reach <from> <to> <i>");
+      const char *notFn = "vid(s) not found or not function vid(s)";
+      auto *from = requireFunction(fromStr, irm, notFn);
+      auto *to = requireFunction(toStr, irm, notFn);
+      return PAQuery{ReachableIn{from, to, !!iStr.size()}};
     }
 
     if (cmd == "callout") {
       auto [vidStr, unread2] = eatToken(unread);
       auto [iStr, unread3] = eatToken(unread2);
       if (vidStr.empty() || unread3.size() || (iStr.size() && iStr != "i"))
-        return PAQuery{SyntaxError{"callout <vid> <i>"}};
-      if (auto F = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(parseVid(vidStr, irm))))
-        return PAQuery{CallOutEdgesIn{F, !!iStr.size()}};
-      return PAQuery{IRParseError{"vid not found or not a function vid"}};
+        throw ptacxx::SyntaxError("syntaxerror-callout-usage", "callout <vid> <i>");
+      auto *F = requireFunction(vidStr, irm);
+      return PAQuery{CallOutEdgesIn{F, !!iStr.size()}};
     }
 
     if (cmd == "callin") {
       auto [vidStr, unread2] = eatToken(unread);
       auto [iStr, unread3] = eatToken(unread2);
       if (vidStr.empty() || unread2.size() || (iStr.size() && iStr != "i"))
-        return PAQuery{SyntaxError{"callin <vid> <i>"}};
-      if (auto F = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(parseVid(vidStr, irm))))
-        return PAQuery{CallInEdgesIn{F, !!iStr.size()}};
-      return PAQuery{IRParseError{"vid not found or not a function vid"}};
+        throw ptacxx::SyntaxError("syntaxerror-callin-usage", "callin <vid> <i>");
+      auto *F = requireFunction(vidStr, irm);
+      return PAQuery{CallInEdgesIn{F, !!iStr.size()}};
     }
 
     if (cmd == "cgpatch") {
       if (ptacxx::options::CGPatchPath.empty())
-        return PAQuery{IRParseError{"-cgpatch-path is empty"}};
+        throw ptacxx::ConfigError("configerror-cgpatch-path-empty", "cgpatch path is empty");
       auto [fromStr, unread2] = eatToken(unread);
       auto [toStr, unread3] = eatToken(unread2);
       if (fromStr.empty() || toStr.empty() || unread3.size())
-        return PAQuery{SyntaxError{"cgpatch <from-vid> <to-vid>"}};
-      auto *caller = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(parseVid(fromStr, irm)));
-      auto *callee = llvm::dyn_cast_or_null<llvm::Function>(irm.vidToValue(parseVid(toStr, irm)));
-      if (!caller || !callee)
-        return PAQuery{IRParseError{"vid(s) not found or not function vid(s)"}};
+        throw ptacxx::SyntaxError("syntaxerror-cgpatch-usage", "cgpatch <from-vid> <to-vid>");
+      const char *notFn = "vid(s) not found or not function vid(s)";
+      auto *caller = requireFunction(fromStr, irm, notFn);
+      auto *callee = requireFunction(toStr, irm, notFn);
       std::ofstream out(ptacxx::options::CGPatchPath, std::ios::app);
       if (!out)
-        return PAQuery{IRParseError{"cannot open" + ptacxx::options::CGPatchPath}};
+        throw ptacxx::FileSystemError("filesystemerror-cgpatch-append-open-failed",
+                                      "cannot open " + ptacxx::options::CGPatchPath);
       out << caller->getName().str() << "\n" << callee->getName().str() << "\n\n";
       return PAQuery{IRParseMessage{"ok"}};
     }
 
     if (cmd == "cgreload") {
       if (!unread.empty())
-        return PAQuery{SyntaxError{"cgreload"}};
+        throw ptacxx::SyntaxError("syntaxerror-cgreload-usage", "cgreload");
       return PAQuery{CGReloadIn{}};
     }
 
     if (cmd == "detail") {
-      if (!unread.empty()) return PAQuery{SyntaxError{"too many arguments"}};
+      if (!unread.empty())
+        throw ptacxx::SyntaxError("syntaxerror-detail-too-many-arguments", "too many arguments");
       detailed = !detailed;
       return PAQuery{IRParseMessage{"detailed = " + std::to_string(detailed)}};
     }
 
     if (cmd == "stds") {
-      if (!unread.empty()) return PAQuery{SyntaxError{"too many arguments"}};
+      if (!unread.empty())
+        throw ptacxx::SyntaxError("syntaxerror-stds-too-many-arguments", "too many arguments");
       stdSilence = !stdSilence;
       return PAQuery{IRParseMessage{"stdSilence = " + std::to_string(stdSilence)}};
     }
 
     if (cmd == "llvms") {
-      if (!unread.empty()) return PAQuery{SyntaxError{"too many arguments"}};
+      if (!unread.empty())
+        throw ptacxx::SyntaxError("syntaxerror-llvms-too-many-arguments", "too many arguments");
       llvmSilence = !llvmSilence;
       return PAQuery{IRParseMessage{"llvmSilence = " + std::to_string(llvmSilence)}};
     }
 
     if (cmd == "rts") {
-      if (!unread.empty()) return PAQuery{SyntaxError{"too many arguments"}};
+      if (!unread.empty())
+        throw ptacxx::SyntaxError("syntaxerror-rts-too-many-arguments", "too many arguments");
       runtimeSilence = !runtimeSilence;
       return PAQuery{IRParseMessage{"runtimeSilence = " + std::to_string(runtimeSilence)}};
     }
 
     if (cmd == "test") {
-      if (!unread.empty()) return PAQuery{SyntaxError{"too many arguments"}};
+      if (!unread.empty())
+        throw ptacxx::SyntaxError("syntaxerror-test-too-many-arguments", "too many arguments");
       return PAQuery{TestIn{}};
     }
 
     if (cmd == "crash") {
-      if (!unread.empty()) return PAQuery{SyntaxError{"too many arguments"}};
+      if (!unread.empty())
+        throw ptacxx::SyntaxError("syntaxerror-crash-too-many-arguments", "too many arguments");
       return PAQuery{CrashTestIn{}};
     }
 
@@ -643,10 +750,11 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       // suppose note file is ordered by llvm name ascending
       llvm::StringMap<std::string> ifstreamBufHolder;
       if (ptacxx::options::NoteFolderPath.empty())
-        return PAQuery{IRParseError{"--note-folder is empty"}};
+        throw ptacxx::ConfigError("configerror-note-folder-empty", "note folder is empty");
       auto [vidStr, unread2] = eatToken(unread);
       if (vidStr.empty())
-        return PAQuery{SyntaxError{"note <vid> [note|-d|-f|-c...|-p...|-a...|-r...]"}};
+        throw ptacxx::SyntaxError("syntaxerror-note-usage",
+                                  "note <vid> [note|-d|-f|-c...|-p...|-a...|-r...]");
       const VId vid = parseVid(vidStr, irm);
       auto [optionStr, unread3] = eatToken(unread2);
       std::string noteText;
@@ -658,31 +766,32 @@ PAQuery parse(const std::string &input, IRManager &irm) {
         auto [parsedCon, unread4] = eatToken(unread3);
         const std::string dsc = stripPrefix(unread4);
         if (parsedCon.empty() || dsc.empty())
-          return PAQuery{SyntaxError{"note <vid> -c <con> <dsc>"}};
+          throw ptacxx::SyntaxError("syntaxerror-note-conjecture-usage",
+                                    "note <vid> -c <con> <dsc>");
         noteText = "- Conjecture: " + parsedCon + "\n  - " + dsc;
       } else if (optionStr == "-p") {
         auto [parsedCon, unread4] = eatToken(unread3);
         conStr = parsedCon;
         prfStr = stripPrefix(unread4);
         if (conStr.empty() || prfStr.empty())
-          return PAQuery{SyntaxError{"note <vid> -p <con> <prf>"}};
+          throw ptacxx::SyntaxError("syntaxerror-note-proof-usage",
+                                    "note <vid> -p <con> <prf>");
       } else if (optionStr == "-a" || optionStr == "-r") {
         auto [parsedCon, unread4] = eatToken(unread3);
         conStr = parsedCon;
         auto [premiseVidStr, unread5] = eatToken(unread4);
         ppStr = stripPrefix(unread5);
         if (conStr.empty() || premiseVidStr.empty() || ppStr.empty())
-          return PAQuery{SyntaxError{"note <vid> -a|-r <con> <vid> <pp>"}};
-        llvm::Value *premise = irm.vidToValue(parseVid(premiseVidStr, irm));
-        if (!premise) return PAQuery{IRParseError{"premise vid not found"}};
+          throw ptacxx::SyntaxError("syntaxerror-note-premise-usage",
+                                    "note <vid> -a|-r <con> <vid> <pp>");
+        llvm::Value *premise = requireValue(premiseVidStr, irm,
+                                            "premise vid not found");
         premiseName = premise->getName().str();
       } else {
         noteText = stripPrefix(unread2);
       }
 
-      llvm::Value *V = irm.vidToValue(vid);
-      llvm::StructType *ST = V ? nullptr : irm.vidToIdStruct(vid);
-      if (!ST && !V) return PAQuery{IRParseError{"vid not found"}};
+      auto [V, ST] = requireValueOrStruct(vid, irm);
 
       std::string heading;
       if (ST) {
@@ -690,7 +799,8 @@ PAQuery parse(const std::string &input, IRManager &irm) {
         if (heading.size() && heading[0] == '%') heading = heading.substr(1);
       } else {
         if (!llvm::isa<llvm::GlobalValue>(V))
-          return PAQuery{IRParseError{"local values are not allowed for notes"}};
+          throw ptacxx::NoteRelated("noterelated-note-local-value",
+                                    "local values are not allowed for notes");
         heading = V->getName().str();
         if (heading.size() && heading[0] == '@') heading = heading.substr(1);
       }
@@ -708,14 +818,17 @@ PAQuery parse(const std::string &input, IRManager &irm) {
 
       std::error_code ec;
       std::filesystem::create_directories(ptacxx::options::NoteFolderPath, ec);
-      if (ec) return PAQuery{IRParseError{"cannot create note folder: " + ec.message()}};
+      if (ec)
+        throw ptacxx::FileSystemError("filesystemerror-note-folder-create-failed",
+                                      "cannot create note folder: " + ec.message());
 
       DebugFileInfo info;
       if (ST)
         info = irm.getDebugInfoFile(ST);
       else
         info = irm.getDebugInfoFile(V);
-      if (!info.valid()) return PAQuery{IRParseError{"no debug info"}};
+      if (!info.valid())
+        throw ptacxx::NoteRelated("noterelated-note-no-debug-info", "no debug info");
 
       const bool appendMode =
           optionStr != "-p" && optionStr != "-a" && optionStr != "-r" && noteText != "-d";
@@ -729,8 +842,10 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       std::ifstream in;
       if (fileFound) {
         in.open(path);
-        if (!in) return PAQuery{IRParseError{"cannot open " + path}};
-      } else return PAQuery{IRParseError{"note not found"}};
+        if (!in)
+          throw ptacxx::FileSystemError("filesystemerror-note-file-open-failed",
+                                        "cannot open " + path);
+      } else throw ptacxx::NoteRelated("noterelated-note-not-found", "note not found");
       ifstreamBufHolder[path] = readAll(in);
       in.close();
       }
@@ -742,7 +857,8 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       const std::string &buffer = ifstreamBufHolder[path];
       found = findLowerboundWithLinePrefix(buffer, headingPos, "## ", heading);
       if (copyWhileFinding) out.write(buffer.data(), headingPos);
-      if (!createIfNotFound && !found) return PAQuery{IRParseError{"note not found"}};
+      if (!createIfNotFound && !found)
+        throw ptacxx::NoteRelated("noterelated-note-not-found-on-modify", "note not found");
 
       switch (mode) {
       case MODE_FINDFILE:
@@ -797,10 +913,12 @@ PAQuery parse(const std::string &input, IRManager &irm) {
               }
               if ((optionStr == "-a" || optionStr == "-r") &&
                   noteLines[i] == "- Theorem: " + conStr)
-                return PAQuery{IRParseError{"theorem cannot add/remove premise"}};
+                throw ptacxx::NoteRelated("noterelated-note-theorem-premise",
+                                          "theorem cannot add/remove premise");
             }
             if (conIdx == std::string::npos)
-              return PAQuery{IRParseError{"conjecture not found"}};
+              throw ptacxx::NoteRelated("noterelated-note-conjecture-not-found",
+                                        "conjecture not found");
 
             std::vector<std::string> modified;
             if (optionStr == "-p") {
@@ -857,7 +975,8 @@ PAQuery parse(const std::string &input, IRManager &irm) {
                 }
               }
               if (whenIdx == std::string::npos)
-                return PAQuery{IRParseError{"premise when not found"}};
+                throw ptacxx::NoteRelated("noterelated-note-premise-when-not-found",
+                                          "premise when not found");
 
               size_t removedIdx = std::string::npos;
               size_t childEnd = whenIdx + 1;
@@ -870,7 +989,8 @@ PAQuery parse(const std::string &input, IRManager &irm) {
                 }
               }
               if (removedIdx == std::string::npos)
-                return PAQuery{IRParseError{"premise not found"}};
+                throw ptacxx::NoteRelated("noterelated-note-premise-not-found",
+                                          "premise not found");
 
               bool hasOtherChild = false;
               for (size_t i = whenIdx + 1; i < childEnd; ++i) {
@@ -893,10 +1013,14 @@ PAQuery parse(const std::string &input, IRManager &irm) {
                   buffer.size() - headingPos - oldStringView.size());
         out.flush();
         std::ofstream file(path);
-        if (!file) return PAQuery{IRParseError{"cannot write " + path}};
+        if (!file)
+          throw ptacxx::FileSystemError("filesystemerror-note-file-write-failed-open",
+                                        "cannot write " + path);
         file << outBuffer;
         file.close();
-        if (!file) return PAQuery{IRParseError{"cannot write " + path}};
+        if (!file)
+          throw ptacxx::FileSystemError("filesystemerror-note-file-write-failed-close",
+                                        "cannot write " + path);
         return PAQuery{IRParseMessage{"ok"}};
       }
       }
@@ -906,14 +1030,12 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       auto [vidStr, unread2] = eatToken(unread);
       auto [ppStr, unread3] = eatToken(unread2);
       if (vidStr.empty() || ppStr.empty() || !stripPrefix(unread3).empty())
-        return PAQuery{SyntaxError{"tv <vid> <pp>"}};
+        throw ptacxx::SyntaxError("syntaxerror-tv-usage", "tv <vid> <pp>");
       if (ptacxx::options::NoteFolderPath.empty())
-        return PAQuery{IRParseError{"--note-folder is empty"}};
+        throw ptacxx::ConfigError("configerror-tv-note-folder-empty", "note folder is empty");
 
       const VId vid = parseVid(vidStr, irm);
-      llvm::Value *V = irm.vidToValue(vid);
-      llvm::StructType *ST = V ? nullptr : irm.vidToIdStruct(vid);
-      if (!ST && !V) return PAQuery{IRParseError{"vid not found"}};
+      auto [V, ST] = requireValueOrStruct(vid, irm);
 
       std::string heading;
       if (ST) {
@@ -921,17 +1043,13 @@ PAQuery parse(const std::string &input, IRManager &irm) {
         if (!heading.empty() && heading[0] == '%') heading = heading.substr(1);
       } else {
         if (!llvm::isa<llvm::GlobalValue>(V))
-          return PAQuery{IRParseError{"local values are not allowed for tv"}};
+          throw ptacxx::SemanticError("semanticerror-tv-local-value",
+                                      "local values are not allowed for tv");
         heading = V->getName().str();
         if (!heading.empty() && heading[0] == '@') heading = heading.substr(1);
       }
 
-      GlobalEntry rootEntry;
-      try {
-        rootEntry = irm.getGlobal(heading);
-      } catch (const std::exception &) {
-        return PAQuery{IRParseError{"vid not found"}};
-      }
+      GlobalEntry rootEntry = irm.getGlobal(heading);
       V = irm.vidToValue(rootEntry.id);
       ST = V ? nullptr : irm.vidToIdStruct(rootEntry.id);
 
@@ -940,21 +1058,24 @@ PAQuery parse(const std::string &input, IRManager &irm) {
         rootInfo = irm.getDebugInfoFile(ST);
       else
         rootInfo = irm.getDebugInfoFile(V);
-      if (!rootInfo.valid()) return PAQuery{IRParseError{"no debug info"}};
+      if (!rootInfo.valid())
+        throw ptacxx::NoteRelated("noterelated-tv-no-debug-info", "no debug info");
 
       bool rootFound = false;
       const std::string rootNoteFile = getNoteFile(rootInfo.path, rootFound);
-      if (!rootFound) return PAQuery{IRParseError{"note not found"}};
+      if (!rootFound)
+        throw ptacxx::NoteRelated("noterelated-tv-note-not-found", "note not found");
 
       std::ifstream rootIn(rootNoteFile);
       const std::string rootBuf = readAll(rootIn);
       size_t rootHeadingPos = 0;
       if (!findLowerboundWithLinePrefix(rootBuf, rootHeadingPos, "## ", heading))
-        return PAQuery{IRParseError{"note not found"}};
+        throw ptacxx::NoteRelated("noterelated-tv-root-note-not-found", "note not found");
       const std::string rootRecord =
           std::string(readRecord(rootBuf, rootHeadingPos, "## "));
       if (!isTheorem(rootRecord, ppStr).has_value())
-        return PAQuery{IRParseError{"proposition not found"}};
+        throw ptacxx::NoteRelated("noterelated-tv-proposition-not-found",
+                                  "proposition not found");
 
       llvm::SmallVector<NodeKey, 8> ances;
       llvm::DenseMap<NodeKey, ProofStatus, NodeKeyInfo> visited;
@@ -967,7 +1088,8 @@ PAQuery parse(const std::string &input, IRManager &irm) {
             break;
           }
         if (inAnces)
-          throw std::runtime_error(
+          throw ptacxx::SemanticError(
+              "semanticerror-tv-recursive-dependency",
               key.func + " " + key.pp + " cannot be proven: recursive dependency");
         if (auto it = visited.find(key); it != visited.end())
           return it->second;
@@ -975,14 +1097,7 @@ PAQuery parse(const std::string &input, IRManager &irm) {
         ances.push_back(key);
         ProofStatus status = ProofStatus::Unproven;
 
-        GlobalEntry entry;
-        try {
-          entry = irm.getGlobal(key.func);
-        } catch (const std::exception &) {
-          visited[key] = status;
-          ances.pop_back();
-          return status;
-        }
+        GlobalEntry entry = irm.getGlobal(key.func);
         llvm::Value *value = irm.vidToValue(entry.id);
         llvm::StructType *structType =
             value ? nullptr : irm.vidToIdStruct(entry.id);
@@ -1066,13 +1181,7 @@ PAQuery parse(const std::string &input, IRManager &irm) {
         if (inAnces) return;
 
         ances.push_back(key);
-        GlobalEntry entry;
-        try {
-          entry = irm.getGlobal(key.func);
-        } catch (const std::exception &) {
-          ances.pop_back();
-          return;
-        }
+        GlobalEntry entry = irm.getGlobal(key.func);
         llvm::Value *value = irm.vidToValue(entry.id);
         llvm::StructType *structType =
             value ? nullptr : irm.vidToIdStruct(entry.id);
@@ -1105,21 +1214,13 @@ PAQuery parse(const std::string &input, IRManager &irm) {
       os.flush();
       return PAQuery{IRParseMessage{buf}};
     }
-    return PAQuery{SyntaxError{"unknown command " + cmd}};
-  } catch (const std::exception &e) {
-    return PAQuery{IRParseError{e.what()}};
+    throw ptacxx::SyntaxError("syntaxerror-unknown-command", "unknown command " + cmd);
   }
 }
 
 std::string responseToString(const PAResponse &response, IRManager &irm) {
   return std::visit([&](const auto &arg) -> std::string {
     using T = std::decay_t<decltype(arg)>;
-    if constexpr (std::is_same_v<T, SyntaxError>)
-      return "syntax: " + arg.message;
-    if constexpr (std::is_same_v<T, IRParseError>)
-      return "parse error: " + arg.message;
-    if constexpr (std::is_same_v<T, AnalyzerError>)
-      return "analyzer error: " + arg.message;
     if constexpr (std::is_same_v<T, IRParseMessage>)
       return arg.message;
     if constexpr (std::is_same_v<T, AliasOut>) {
@@ -1135,12 +1236,26 @@ std::string responseToString(const PAResponse &response, IRManager &irm) {
       llvm::raw_string_ostream os(buf);
       if (!arg.targets) os << "unknown";
       else for (auto v : arg.targets.value()) {
-        try {
-          irm.printValue(os, v, detailed ? IRManager::PRT_DETAILED : IRManager::PRT_VID) << "\n";
-        } catch (const std::exception &e) {
-          os << e.what();
-        }
+        irm.printValue(os, v, detailed ? IRManager::PRT_DETAILED : IRManager::PRT_VID) << "\n";
       }
+      os.flush();
+      return buf;
+    }
+
+    if constexpr (std::is_same_v<T, PtsTestOut>) {
+      const unsigned rateHundredths =
+          arg.total ? static_cast<unsigned>(
+                          10000.0 * static_cast<double>(arg.fails) /
+                              static_cast<double>(arg.total) + 0.5)
+                    : 0;
+      std::string buf;
+      llvm::raw_string_ostream os(buf);
+      os << "Fail=" << arg.fails << "/" << arg.total << " ("
+         << (rateHundredths / 100) << "."
+         << (rateHundredths % 100 < 10 ? "0" : "") << (rateHundredths % 100)
+         << "%)\n";
+      for (const auto &[key, target] : arg.firstFails)
+        os << key << " " << target << "\n";
       os.flush();
       return buf;
     }
@@ -1149,11 +1264,7 @@ std::string responseToString(const PAResponse &response, IRManager &irm) {
       std::string buf;
       llvm::raw_string_ostream os(buf);
       for (llvm::Value *v : *arg.ptrs) {
-        try {
-          irm.printValue(os, v, detailed ? IRManager::PRT_DETAILED : IRManager::PRT_VID) << "\n";
-        } catch (const std::exception &e) {
-          os << e.what();
-        }
+        irm.printValue(os, v, detailed ? IRManager::PRT_DETAILED : IRManager::PRT_VID) << "\n";
       }
       os.flush();
       return buf;

@@ -21,13 +21,18 @@ Value *DynamicMemoryBuiltins::getDynamicAllocationSize(CallBase *CB) {
       Function* strlenFn = _M.getFunction("strlen");
       if (!strlenFn) {
         auto sizeTy = _M.getDataLayout().getIntPtrType(_Ctx, 0);
-        strlenFn = cast<Function>(_M.getOrInsertFunction("strlen",sizeTy,
+        auto *callee = _M.getOrInsertFunction("strlen", sizeTy,
 #if LLVM_VERSION_MAJOR <= 14
           Type::getInt8PtrTy(_Ctx)
 #else
           PointerType::get(_Ctx, 0)
 #endif
-        ).getCallee());
+        ).getCallee();
+        strlenFn = dyn_cast<Function>(callee);
+        if (!strlenFn)
+          throw ptacxx::InputBitcodeError(
+              "inputbitcodeerror-strlen-name-not-function",
+              "name 'strlen' is already used by a non-function global");
       }
       auto str = CB->getArgOperand(0);
       auto strlen = CallInst::Create(strlenFn, {str}, "", LLVM_INS(CB->getIterator()));
@@ -95,6 +100,7 @@ Value *DynamicMemoryBuiltins::getFreedOperand(const CallBase *CB) {
 #pragma clang diagnostic ignored "-Wswitch-enum"
 DynamicMemoryBuiltins::MemLibFunc
   DynamicMemoryBuiltins::getMemLibFunc(const Function *callee) {
+  ASSERT(callee, "assertionviolation-get-mem-lib-func-null-callee", "null callee");
   LibFunc libFunc;
   auto &_TLI = _irm.getTLI();
   bool suc = _TLI.getLibFunc(*callee, libFunc);

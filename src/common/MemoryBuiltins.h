@@ -1,6 +1,7 @@
 #pragma once
 
 #include "IRManager.h"
+#include "Error.h"
 
 #include <llvm/Analysis/MemoryBuiltins.h>
 #include <llvm/Analysis/TargetLibraryInfo.h>
@@ -22,11 +23,15 @@ public:
   DynamicMemoryBuiltins(const DynamicMemoryBuiltins&) = delete;
   DynamicMemoryBuiltins& operator=(const DynamicMemoryBuiltins&) = delete;
 
+  /// @pre CB is a direct call: !CB->isNoBuiltin() && CB->getCalledFunction()
+  /// @return false if the direct call is not a known heap allocation
   bool isHeapAllocationSite(llvm::CallBase *CB);
   
+  /// @pre CB is a direct call: !CB->isNoBuiltin() && CB->getCalledFunction()
   /// @note realloc is also considered as a free (and an allocation)
   /// @return nullptr if not allocation call, will do instrument, ensure i64
   llvm::Value *getDynamicAllocationSize(llvm::CallBase *CB);
+  /// @pre CB is a direct call: !CB->isNoBuiltin() && CB->getCalledFunction()
   /// @note realloc is also considered as a free (and an allocation)
   /// @return nullptr if not free call
   llvm::Value *getFreedOperand(const llvm::CallBase *CB);
@@ -69,10 +74,14 @@ private:
   static constexpr MemLibFunc MEMLIBFUNC_MARK_REALLOC = LibFn_realloc;
   static constexpr MemLibFunc MEMLIBFUNC_MARK_FREE = LibFn_free;
   static constexpr MemLibFunc MEMLIBFUNC_MARK_LAST = LibFn_group_delete_array;
+  /// @pre the call is direct: !CB->isNoBuiltin() and CB->getCalledFunction()
+  /// @return the directly called function
   static llvm::Function* validDirectCall(const llvm::CallBase *CB) {
-    if (CB->isNoBuiltin()) throw std::runtime_error("fatal");
+    ASSERT(CB, "assertionviolation-valid-direct-call-null-cb", "null CallBase");
+    ASSERT(!CB->isNoBuiltin(), "assertionviolation-valid-direct-call-nobuiltin",
+           "call marked nobuiltin");
     auto *F = CB->getCalledFunction();
-    if (!F) throw std::runtime_error("fatal");
+    ASSERT(F, "assertionviolation-valid-direct-call-indirect", "indirect call");
     return F;
   }
   MemLibFunc getMemLibFunc(const llvm::Function *callee);

@@ -41,11 +41,16 @@ LLVM_CL_IGNORE_WARNINGS_END
 class DyckAAQueryServer : public UnifiPAWrapper {
 private:
   std::unique_ptr<legacy::PassManager> _passes;
-  std::unique_ptr<DyckAliasAnalysis> _DyckAA;
+  DyckAliasAnalysis *_DyckAA = nullptr;
 public:
-  DyckAAQueryServer(IRManager &irm) : UnifiPAWrapper(irm) {}
+  DyckAAQueryServer() = default;
   ~DyckAAQueryServer() override;
 private:
+  std::string argParseAndInitLLVM(int argc, char **argv) override {
+    pInitLLVM = new InitLLVM(argc, argv);
+    cl::ParseCommandLineOptions(argc, argv, "DyckAA Pointer Analysis Tool\n");
+    return InputFilename;
+  }
   void init() override {
     auto &M = _irm.getModule();
 
@@ -55,8 +60,8 @@ private:
     }
 
     _passes = std::make_unique<legacy::PassManager>();
-    _DyckAA = std::make_unique<DyckAliasAnalysis>();
-    _passes->add(_DyckAA.get());
+    _DyckAA = new DyckAliasAnalysis();
+    _passes->add(_DyckAA);
     _passes->run(M);
     
     if (PrintCallGraph && !OnlyStatistics) {
@@ -93,10 +98,5 @@ private:
 DyckAAQueryServer::~DyckAAQueryServer() = default;
 
 int main(int argc, char **argv) {
-  ptacxx::options::CGPatchCLIntercept().go(argc, argv);
-  InitLLVM X(argc, argv);
-  cl::ParseCommandLineOptions(argc, argv, "DyckAA Pointer Analysis Tool\n");
-  auto irm = IRManager();
-  irm.addMainModule(InputFilename);
-  return DyckAAQueryServer(irm).run();
+  return DyckAAQueryServer().run(argc, argv);
 }

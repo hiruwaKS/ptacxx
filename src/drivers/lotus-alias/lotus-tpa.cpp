@@ -140,9 +140,20 @@ class TPAQueryServer : public IncluPAWrapper {
 private:
   std::unique_ptr<tpa::SemiSparsePointerAnalysis> _tpa;
 public:
-  TPAQueryServer(IRManager &irm) : IncluPAWrapper(irm) {}
+  TPAQueryServer() = default;
   ~TPAQueryServer() override;
 private:
+  std::string argParseAndInitLLVM(int argc, char **argv) override {
+    pInitLLVM = new InitLLVM(argc, argv);
+
+    cl::ParseCommandLineOptions(
+        argc, argv,
+        "TPA (flow-/context-sensitive semi-sparse pointer analysis) tool\n");
+
+    // Initialize spdlog with default pattern
+    spdlog::set_pattern("%^[%l]%$ %v");
+    return InputFilename;
+  }
   void init() override {
     auto &M = _irm.getModule();
   
@@ -194,7 +205,8 @@ private:
                                       : std::string(ExtPointerTableFile);
     if (!sys::fs::exists(pointerSpecPath)) {
       LOG_ERROR("Pointer spec file not found: {}", pointerSpecPath);
-      exit(1);
+      throw ptacxx::FileSystemError("filesystemerror-pointer-spec-not-found",
+                                    "pointer spec file not found: " + pointerSpecPath);
     }
     LOG_INFO("Loading external pointer table from: {}", pointerSpecPath);
     _tpa->loadExternalPointerTable(pointerSpecPath.c_str());
@@ -208,7 +220,9 @@ private:
       if (EC) {
         LOG_ERROR("Failed to create directory {}: {}", CFGDotOutDir,
                   EC.message());
-        exit(2);
+        throw ptacxx::FileSystemError("filesystemerror-cfg-dot-dir-create-failed",
+                                      "failed to create directory " + CFGDotOutDir +
+                                          ": " + EC.message());
       }
   
       LOG_INFO("Writing CFG dot files to: {}", CFGDotOutDir);
@@ -320,18 +334,5 @@ private:
 TPAQueryServer::~TPAQueryServer() = default;
 
 int main(int argc, char **argv) {
-  ptacxx::options::CGPatchCLIntercept().go(argc, argv);
-  InitLLVM X(argc, argv);
-
-  cl::ParseCommandLineOptions(
-      argc, argv,
-      "TPA (flow-/context-sensitive semi-sparse pointer analysis) tool\n");
-
-  // Initialize spdlog with default pattern
-  spdlog::set_pattern("%^[%l]%$ %v");
-
-  // Load IR module
-  auto irm = IRManager();
-  irm.addMainModule(InputFilename);
-  return TPAQueryServer(irm).run();
+  return TPAQueryServer().run(argc, argv);
 }

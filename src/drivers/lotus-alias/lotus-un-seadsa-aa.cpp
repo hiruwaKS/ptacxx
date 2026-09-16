@@ -74,12 +74,19 @@ LLVM_CL_IGNORE_WARNINGS_END
 class SeadsaQueryServer : public UnifiPAWrapper {
 private:
   std::unique_ptr<legacy::PassManager> _passes;
-  std::unique_ptr<seadsa::SeaDsaAAWrapperPass> _seadsa;
+  seadsa::SeaDsaAAWrapperPass *_seadsa = nullptr;
   std::unique_ptr<ToolOutputFile> _asmOutput;
 public:
-  SeadsaQueryServer(IRManager &irm) : UnifiPAWrapper(irm) {}
+  SeadsaQueryServer() = default;
   ~SeadsaQueryServer() override;
 private:
+  std::string argParseAndInitLLVM(int argc, char **argv) override {
+    EnableDebugBuffering = true;
+    pInitLLVM = new InitLLVM(argc, argv);
+    cl::ParseCommandLineOptions(
+        argc, argv, "Sea-DSA Advanced Memory Graph Analysis Tool");
+    return InputFilename;
+  }
   void init() override {
     auto &M = _irm.getModule();
   
@@ -98,7 +105,9 @@ private:
       if (error_code) {
         errs() << "error: Could not open " << AsmOutputFilename << ": "
                      << error_code.message() << "\n";
-        exit(3);
+        throw ptacxx::FileSystemError("filesystemerror-asm-output-open-failed",
+                                      "could not open " + AsmOutputFilename + ": " +
+                                          error_code.message());
       }
     }
 
@@ -112,8 +121,8 @@ private:
     _passes->add(new seadsa::RemovePtrToInt());
     _passes->add(new seadsa::AllocWrapInfo());
     _passes->add(new seadsa::DsaLibFuncInfo());
-    _seadsa = std::make_unique<seadsa::SeaDsaAAWrapperPass>(); // warning: immutable pass
-    _passes->add(_seadsa.get());
+    _seadsa = new seadsa::SeaDsaAAWrapperPass();
+    _passes->add(_seadsa);
   
     if (MemDot) _passes->add(seadsa::createDsaPrinterPass());
   
@@ -137,13 +146,5 @@ private:
 SeadsaQueryServer::~SeadsaQueryServer() = default;
 
 int main(int argc, char **argv) {
-  ptacxx::options::CGPatchCLIntercept().go(argc, argv);
-  EnableDebugBuffering = true;
-  InitLLVM X2(argc, argv);
-  cl::ParseCommandLineOptions(
-      argc, argv, "Sea-DSA Advanced Memory Graph Analysis Tool");
-
-  auto irm = IRManager();
-  irm.addMainModule(InputFilename);
-  return SeadsaQueryServer(irm).run();
+  return SeadsaQueryServer().run(argc, argv);
 }

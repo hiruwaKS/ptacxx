@@ -5,10 +5,12 @@
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/Support/InitLLVM.h"
 
 #include <iostream>
 #include <algorithm>
 #include <queue>
+#include <set>
 #include <string>
 
 namespace ptacxx::options {
@@ -29,7 +31,9 @@ bool CGPatchCLIntercept::interceptOption(const std::string &key,
 }
 } // namespace ptacxx::options
 
-PAWrapper::~PAWrapper() = default;
+PAWrapper::~PAWrapper() {
+  if (pInitLLVM) delete pInitLLVM;
+}
 
 void PAWrapper::computeAllocationSites() {
   if (_allocSitesComputed) return;
@@ -53,6 +57,7 @@ void PAWrapper::computeAllocationSites() {
       for (auto &I : BB) {
         AllocationSite site;
         if (auto *CB = llvm::dyn_cast<llvm::CallBase>(&I)) {
+          if (CB->isNoBuiltin()) continue;
           auto func = CB->getCalledFunction();
           if (!func || llvmSkip(func)) continue;
           if (builtins.isHeapAllocationSite(CB)) {
@@ -73,12 +78,14 @@ void PAWrapper::computeAllocationSites() {
 }
 
 llvm::ArrayRef<AllocationSite> PAWrapper::getAllocationSites() const {
-  assert(_allocSitesComputed);
+  ASSERT(_allocSitesComputed, "assertionviolation-allocation-sites-not-computed",
+         "allocation sites not computed");
   return llvm::ArrayRef<AllocationSite>(_allocationSites);
 }
 
 llvm::ArrayRef<AllocationSite> PAWrapper::getAllocationSites(llvm::Function *F) const {
-  assert(_allocSitesComputed);
+  ASSERT(_allocSitesComputed, "assertionviolation-allocation-sites-not-computed-by-function",
+         "allocation sites not computed");
   size_t start = _allocationSites.size();
   for (size_t i = 0; i < _allocationSites.size(); ++i) {
     const AllocationSite &site = _allocationSites[i];
@@ -122,19 +129,54 @@ PTAliasResult PAWrapper::getAliasResultCached(Ptr a, Ptr b) {
 }
 
 std::string PAWrapper::handleQueryWrapper(const std::string &req) {
-  PAResponse response;
-  try {
-    PAQuery query = parse(req, _irm);
-    response = std::visit([&](const auto &arg) -> PAResponse {
+  PAQuery query = parse(req, _irm);
+  PAResponse response = std::visit([&](const auto &arg) -> PAResponse {
       using T = std::decay_t<decltype(arg)>;
-      if constexpr (std::is_same_v<T, IRParseMessage> || std::is_same_v<T, IRParseError>
-        || std::is_same_v<T, SyntaxError> || std::is_same_v<T, AnalyzerError>)
+      if constexpr (std::is_same_v<T, IRParseMessage>)
         return arg;
       if constexpr (std::is_same_v<T, PtsIn>) {
         return PtsOut{ getPointsToSetCached(arg.ptr) };
       }
       if constexpr (std::is_same_v<T, PtIn>) {
         return PtOut{ mayPointTo(getPointsToSetCached(arg.ptr), arg.obj) ? ResultMay: ResultNo };
+      }
+      if constexpr (std::is_same_v<T, PtsTestIn>) {
+        // Each dumped edge (ptr -> target) is one check: it FAILs when the
+        // analyzer does not report `ptr` may point to `target` (missed edge).
+        // The pair query is analyzer-specific: Inclu tests set membership,
+        // Unifi uses its alias query (avoiding a scan of all allocation sites).
+        size_t total = 0;
+        size_t fails = 0;
+        std::vector<std::pair<VId, VId>> firstFails;
+        for (const auto &[ptr, targets] : arg.records) {
+          const VId keyVid = _irm.valueToVId(ptr);
+          for (VId t : targets) {
+            ++total;
+            llvm::Value *target = _irm.vidToValue(t);
+            if (target) {
+              const auto fast = getPointToResultCached(ptr, target);
+              if (arg.consistent) {
+                const auto slow = getPointToResultCachedSlow(ptr, target);
+                const bool fastNo = fast == llvm::AliasResult::NoAlias;
+                const bool slowNo = slow == llvm::AliasResult::NoAlias;
+                if (fastNo != slowNo)
+                  throw ptacxx::AnalyzerError(
+                      "analyzererror-pts-test-inconsistent",
+                      "pts-test inconsistent: ptr " + std::to_string(keyVid) +
+                          " target " + std::to_string(t) + " fast=" +
+                          (fastNo ? "No" : "May") + " slow=" +
+                          (slowNo ? "No" : "May"));
+                if (!fastNo) continue;
+              } else if (fast != llvm::AliasResult::NoAlias) {
+                continue;
+              }
+            }
+            ++fails;
+            if (fails <= 5)
+              firstFails.emplace_back(keyVid, t);
+          }
+        }
+        return PtsTestOut{total, fails, std::move(firstFails)};
       }
       if constexpr (std::is_same_v<T, AliasIn>) {
         return AliasOut{ getAliasResultCached(arg.a, arg.b) };
@@ -517,11 +559,9 @@ std::string PAWrapper::handleQueryWrapper(const std::string &req) {
         os.flush();
         return TestOut{buf};
       }
-      return IRParseError{"unknown query type or not available"};
+      throw ptacxx::SemanticError("semanticerror-unknown-query-type",
+                                  "unknown query type or not available");
     }, query);
-  } catch (const std::exception &e) {
-    response = AnalyzerError{ std::string(e.what()) };
-  }
   return responseToString(response, _irm);
 }
 
@@ -558,7 +598,8 @@ PAWrapper::indirectCallResolver(llvm::CallBase *callInst, llvm::Function *caller
   llvm::SmallVector<ptacxx::CallGraph::ResolvedTarget, 4> targets;
   if (callInst) {
     llvm::Value *calledValue = callInst->getCalledOperand();
-    assert(calledValue);
+    ASSERT(calledValue, "assertionviolation-indirect-call-resolver-null-operand",
+           "null called operand");
     auto pts = getPointsToSetCached(calledValue);
     if (!pts) targets.push_back(std::make_pair(ptacxx::CallEdge::CALLANYTHING, nullptr));
     else for (auto ptr : pts.value()) {
@@ -578,28 +619,96 @@ PAWrapper::indirectCallResolver(llvm::CallBase *callInst, llvm::Function *caller
   return targets;
 }
 
-int PAWrapper::run() {
-  init();
+int PAWrapper::run(int argc, char **argv) {
+  ptacxx::Stopwatch sw;
+  try {
+    ptacxx::options::CGPatchCLIntercept().go(argc, argv);
+    std::string inputPath = argParseAndInitLLVM(argc, argv);
+    auto parse = sw.record();
+    _irm.loadMainModule(inputPath);
+    auto load = sw.record();
+    _irm.buildModuleIndex();
+    auto index = sw.record();
+    init();
+    auto analysis = sw.record();
+    emitInit(parse, load, index, analysis);
+  } catch (const std::exception &e) {
+    emitInitError(e);
+    return 1;
+  }
+  return queryLoop();
+}
+
+int PAWrapper::queryLoop() {
   while (true) {
     std::string input;
     std::getline(std::cin, input);
-    std::string output = handleQueryWrapper(input);
-    std::cout << input << "\n<queryresult>\n" << output << "\n</queryresult>\n";
+    try {
+      std::string output = handleQueryWrapper(input);
+      std::cout << input << "\n<queryresult>\n" << output << "\n</queryresult>\n";
+    } catch (const std::exception &e) {
+      std::cout << input << "\n<queryerror>\n" << e.what() << "\n</queryerror>\n";
+    }
     if (std::cin.eof()) break;
   }
   return 0;
+}
+
+void PAWrapper::emitInit(const ptacxx::Stopwatch::Record &parse,
+                         const ptacxx::Stopwatch::Record &load,
+                         const ptacxx::Stopwatch::Record &index,
+                         const ptacxx::Stopwatch::Record &analysis) {
+  std::cout << "<init>\n"
+            << "arg_parse " << parse.split << " us\n"
+            << "ir_load " << load.lap << " us\n"
+            << "index " << index.lap << " us\n"
+            << "analysis " << analysis.lap << " us\n"
+            << "total " << analysis.split << " us\n"
+            << "</init>\n";
+}
+
+void PAWrapper::emitInitError(const std::exception &e) {
+  std::cout << "<initerror>\n" << e.what() << "\n</initerror>\n";
 }
 
 PTAliasResult IncluPAWrapper::getAliasResult(Ptr a, Ptr b) {
   return aliasByIntersection(getPointsToSetCached(a), getPointsToSetCached(b));
 }
 
+ptacxx::PTResult IncluPAWrapper::getPointToResultCached(Ptr ptr, AllocSite site) {
+  auto result = getPointsToSetCached(ptr);
+  if (!result) return llvm::AliasResult::MayAlias;
+  for (auto target : result.value()) {
+    if (target == site) return llvm::AliasResult::MayAlias;
+  }
+  return llvm::AliasResult::NoAlias;
+}
+
+ptacxx::PTResult IncluPAWrapper::getPointToResultCachedSlow(Ptr ptr, AllocSite site) {
+  return getAliasResult(ptr, site);
+}
+
 bool UnifiPAWrapper::getPointsToSet(Ptr value, PointsToSet &pts){
-  assert(!pts.size());
+  ASSERT(pts.empty(), "assertionviolation-points-to-set-output-not-empty",
+         "output PointsToSet is not empty");
+  computeAllocationSites();
   for (auto site: getAllocationSites()) {
     if (getAliasResultCached(value, site.site) != llvm::AliasResult::NoAlias) {
       pts.push_back(site.site);
     }
   }
   return true;
+}
+
+ptacxx::PTResult UnifiPAWrapper::getPointToResultCached(Ptr ptr, AllocSite site) {
+  return getAliasResultCached(ptr, site);
+}
+
+ptacxx::PTResult UnifiPAWrapper::getPointToResultCachedSlow(Ptr ptr, AllocSite site) {
+  auto result = getPointsToSetCached(ptr);
+  if (!result) return llvm::AliasResult::MayAlias;
+  for (auto target : result.value()) {
+    if (target == site) return llvm::AliasResult::MayAlias;
+  }
+  return llvm::AliasResult::NoAlias; 
 }

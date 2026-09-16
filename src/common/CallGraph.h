@@ -64,13 +64,20 @@ public:
   void buildCG(IndirectResolver indirectResolver);
   void rebuild();
 
+  /// @pre buildCG has been called
   /// @brief reverse call graph will not be built until buildReverseCG is called
   void buildReverseCG();
   
+  /// @pre buildCG has been called; from and to are non-null
+  /// @return the call edges along a path from to; empty if unreachable
   std::vector<CallEdge> reach(llvm::Function *from, llvm::Function *to, bool ignoreUnknown = false) const;
+  /// @pre buildCG has been called
+  /// @return out edges of from; empty if from has none
   EdgesResult getOutEdges(llvm::Function *from) const;
+  /// @pre buildCG has been called; callsite is non-null
   EdgesResult getOutEdgesAtCallSite(llvm::CallBase *from) const;
   EdgesResult getCallAnythingEdges() const;
+  /// @pre buildReverseCG has been called
   /// @note getInEdges + getCallAnythingEdges = all in edges
   EdgesResult getInEdges(llvm::Function *to) const;
 private:

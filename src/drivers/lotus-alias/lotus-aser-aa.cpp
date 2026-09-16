@@ -133,9 +133,16 @@ private:
   std::pair<std::unique_ptr<llvm::ModulePass>, std::unique_ptr<PTAPass>> _ptaPass;
   std::unique_ptr<llvm::legacy::PassManager> _passes;
 public:
-  AserPTAQueryServer(IRManager &irm) : IncluPAWrapper(irm) {}
+  AserPTAQueryServer() = default;
   ~AserPTAQueryServer() override;
 private:
+  std::string argParseAndInitLLVM(int argc, char **argv) override {
+    pInitLLVM = new InitLLVM(argc, argv);
+    // Parse command line
+    cl::ParseCommandLineOptions(
+        argc, argv, "AserPTA - High-Performance Pointer Analysis Tool\n");
+    return InputFilename;
+  }
   void init() override {
     auto &M = _irm.getModule();
   
@@ -175,7 +182,8 @@ private:
   } else if (SolverType == "deep") {                                           \
     _ptaPass = getPtaPass<DeepPropagation<FieldModel<Ctx, Pts>>>();            \
   } else {                                                                     \
-    errs() << "Unknown solver type: " << SolverType << "\n"; exit(1);          \
+    errs() << "Unknown solver type: " << SolverType << "\n";                   \
+    throw ptacxx::ConfigError("configerror-unknown-solver-type", "unknown solver type: " + SolverType); \
   }
 
 
@@ -192,7 +200,7 @@ private:
     } else {                                                                   \
       errs() << "Unknown analysis mode: " << AnalysisMode << "\n";             \
       errs() << "Valid modes: ci, 1-cfa, 2-cfa, origin\n";                     \
-      exit(1);                                                                 \
+      throw ptacxx::ConfigError("configerror-unknown-analysis-mode", "unknown analysis mode: " + AnalysisMode);             \
     }                                                                          \
   }
 
@@ -213,8 +221,7 @@ private:
         BDDAndersPtsSet::ReorderingMethod method =                             \
             BDDAndersPtsSet::ReorderingMethod::Sift;                           \
         if (!BDDAndersPtsSet::parseReorderingMethod(methodName, method)) {     \
-          llvm::report_fatal_error(                                            \
-              llvm::Twine("Unknown BDD reordering method: ") + methodName);    \
+          throw ptacxx::ConfigError("configerror-unknown-bdd-reordering-method", "unknown BDD reordering method: " + methodName);   \
         }                                                                      \
         BDDAndersPtsSet::configureReordering(true, method);                    \
       } else {                                                                 \
@@ -240,7 +247,7 @@ private:
     _passes->add(new StandardHeapAPIRewritePass());
 
     // Analysis passes
-    _passes->add(_ptaPass.first.get());
+    _passes->add(_ptaPass.first.release());
     if (DumpStats) llvm::ResetStatistics();
     llvm::errs() << "Running pointer analysis...\n";
     _passes->run(M);
@@ -269,13 +276,5 @@ private:
 AserPTAQueryServer::~AserPTAQueryServer() = default;
 
 int main(int argc, char **argv) {
-  ptacxx::options::CGPatchCLIntercept().go(argc, argv);
-  InitLLVM X(argc, argv);
-  // Parse command line
-  cl::ParseCommandLineOptions(
-      argc, argv, "AserPTA - High-Performance Pointer Analysis Tool\n");
-
-  auto irm = IRManager();
-  irm.addMainModule(InputFilename);
-  return AserPTAQueryServer(irm).run();
+  return AserPTAQueryServer().run(argc, argv);
 }

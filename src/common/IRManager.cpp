@@ -25,43 +25,43 @@
 llvm::raw_ostream &printLinesFromFile(llvm::raw_ostream &os, const std::string &path, unsigned start, unsigned end);
 
 static std::string debugFilePath(const llvm::DIFile *File) {
-  assert(File);
+  ASSERT(File, "assertionviolation-debug-file-path-null", "null DIFile");
   return (File->getDirectory() + "/" + File->getFilename()).str();
 }
 
 void IRManager::addMainModule(const std::string &irPath) {
+  loadMainModule(irPath);
+  buildModuleIndex();
+
+  if (!_irStat.hasMain)
+    llvm::errs() << "IRManager: main module without main function\n";
+}
+
+void IRManager::loadMainModule(const std::string &irPath) {
   if (irPath.empty())
-    throw std::runtime_error("IRManager: irPath is empty");
+    throw ptacxx::ConfigError("configerror-ir-path-empty", "IR path is empty");
   llvm::SMDiagnostic diag;
-  {
-  ScopeTimer _("Load");
   auto M = llvm::parseIRFile(irPath, diag, getThreadLocalContext());
   if (!M) {
     std::string buf;
     llvm::raw_string_ostream os(buf);
     diag.print("IRManager", os);
     os.flush();
-    throw std::runtime_error(
-        "IRManager: failed to load '" + irPath + "': " + buf);
+    throw ptacxx::InputBitcodeError("inputbitcodeerror-ir-load-failed",
+                                    "failed to load '" + irPath + "': " + buf);
   }
-
-  traverseModule(std::move(M));
-  }
-
-  if (!_irStat.hasMain)
-    llvm::errs() << "IRManager: main module without main function\n";
-}
-
-
-void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
-  _module = std::move(pM);
-  auto &M = *_module;
-  _targetTriple = llvm::Triple(M.getTargetTriple());
+  _module = std::move(M);
+  auto &Mod = *_module;
+  _targetTriple = llvm::Triple(Mod.getTargetTriple());
   _TLII = std::make_unique<llvm::TargetLibraryInfoImpl>(_targetTriple);
   _TLI = std::make_unique<llvm::TargetLibraryInfo>(*_TLII);
-  _irStat.hasMain = M.getFunction("main") != nullptr;
-  _irStat.hasGlobalCtor = M.getNamedGlobal("llvm.global_ctors") != nullptr;
-  _irStat.hasGlobalDtor = M.getNamedGlobal("llvm.global_dtors") != nullptr;
+  _irStat.hasMain = Mod.getFunction("main") != nullptr;
+  _irStat.hasGlobalCtor = Mod.getNamedGlobal("llvm.global_ctors") != nullptr;
+  _irStat.hasGlobalDtor = Mod.getNamedGlobal("llvm.global_dtors") != nullptr;
+}
+
+void IRManager::buildModuleIndex() {
+  auto &M = *_module;
   int globalCnt = 0, globalPtrCnt = 0;
   int funcCnt = 0, argPtrCnt = 0, instPtrCnt = 0;
   int localIdx = 0;
@@ -69,11 +69,12 @@ void IRManager::traverseModule(std::unique_ptr<llvm::Module> pM) {
   int idStructTypeCnt = 0;
 
   auto recordStructTypes = [&](llvm::Type *Ty) {
-    assert(Ty);
+    ASSERT(Ty, "assertionviolation-record-struct-types-null-type", "null type");
     llvm::DenseSet<llvm::Type *> Visited;
     std::vector<llvm::Type *> Worklist{Ty};
     while (!Worklist.empty()) {
-      llvm::Type *CurTy = Worklist.back(); assert(CurTy);
+      llvm::Type *CurTy = Worklist.back();
+      ASSERT(CurTy, "assertionviolation-record-struct-types-null-worklist-type", "null worklist type");
       Worklist.pop_back();
       if (!Visited.insert(CurTy).second) continue;
       if (auto *ST = llvm::dyn_cast<llvm::StructType>(CurTy)) {
@@ -341,7 +342,8 @@ GlobalEntry IRManager::getGlobal(const std::string &name) const {
       continue;
     if (llvm::Value *value = vidToValue(entry.id)) {
       if (matched) {
-        throw std::runtime_error("getValueFromString: ambiguous: " + name);
+        throw ptacxx::VidNotFound("vidnotfound-get-global-ambiguous",
+                                  "ambiguous global name '" + name + "'");
       } else {
         match = entry;
         matched = true;
@@ -349,7 +351,8 @@ GlobalEntry IRManager::getGlobal(const std::string &name) const {
     }
   }
   if (!matched)
-    throw std::runtime_error("getValueFromString: not found: " + name);
+    throw ptacxx::VidNotFound("vidnotfound-get-global-not-found",
+                              "global name not found: " + name);
   return match;
 }
 
@@ -367,7 +370,7 @@ llvm::raw_ostream &printLinesFromFile(llvm::raw_ostream &os, const std::string &
 }
 
 llvm::raw_ostream &IRManager::printValue(llvm::raw_ostream &os, llvm::Value *V, PrintLevel pl) const {
-  if (!V) throw std::runtime_error("fatal");
+  ASSERT(V, "assertionviolation-print-value-null", "null value");
   auto vid = valueToVId(V);
   os << vid;
   if (pl == PrintLevel::PRT_VID) return os;
@@ -478,7 +481,7 @@ llvm::raw_ostream &IRManager::printValue(llvm::raw_ostream &os, llvm::Value *V, 
   return os;
 }
 llvm::raw_ostream &IRManager::printIdStructType(llvm::raw_ostream &os, llvm::StructType *ST, PrintLevel pl) const {
-  if (!ST) throw std::runtime_error("pass nullptr to printIdStructType");
+  ASSERT(ST, "assertionviolation-print-id-struct-type-null", "pass nullptr to printIdStructType");
   os << idStructToVId(ST);
   if (pl == PrintLevel::PRT_VID) return os;
   os << " " << (ST->hasName() ? ST->getName() : "<unnamed id struct>");

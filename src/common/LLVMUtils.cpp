@@ -1,4 +1,5 @@
 #include "LLVMUtils.h"
+#include "Error.h"
 
 #include "llvm/IR/Instructions.h" 
 
@@ -13,13 +14,15 @@ inline llvm::LLVMContext &getThreadLocalContext() {
 LLVM_CL_IGNORE_WARNINGS_END
 
 Value* ensureI64(Value *V, BasicBlock::iterator instPos) {
+  ASSERT(V, "assertionviolation-ensure-i64-null-value", "null value passed to ensureI64");
   auto i64Ty = Type::getInt64Ty(getThreadLocalContext());
   if (V->getType() == i64Ty) return V;
   if (V->getType()->isIntegerTy())
     return CastInst::CreateSExtOrBitCast(V, i64Ty, "", LLVM_INS(instPos)); // will someone pass -1?
   if (V->getType()->isPointerTy())
     return CastInst::Create(Instruction::PtrToInt, V, i64Ty, "", LLVM_INS(instPos));
-  throw std::runtime_error("fatal");
+  ASSERT(false, "assertionviolation-ensure-i64-unsupported-type",
+         "value type is neither integer nor pointer");
 }
 
 std::string getDemangledName(const std::string &mangled) {

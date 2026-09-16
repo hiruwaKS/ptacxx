@@ -2,6 +2,7 @@
 
 #include "VId.h"
 #include "Common.h"
+#include "Error.h"
 
 #include <llvm/Analysis/TargetLibraryInfo.h>
 #include <llvm/IR/Module.h>
@@ -86,6 +87,11 @@ public:
   };
   explicit IRManager() {}
 
+  /// parse the module from irPath and set up module-level info
+  void loadMainModule(const std::string &irPath);
+  /// build VId / struct / global-name indices over the loaded module
+  void buildModuleIndex();
+  /// loadMainModule + buildModuleIndex
   void addMainModule(const std::string &irPath);
   
   // you can use this to modify the module, like instrumenting
@@ -96,7 +102,7 @@ public:
 
   /// @note cached, safe for instrumenting
   VId valueToVId(llvm::Value *V) const {
-    if (!V) throw std::runtime_error("pass nullptr to valueToVId");
+    ASSERT(V, "assertionviolation-value-to-vid-null", "pass nullptr to valueToVId");
     auto it = _valueToVidCache.find(V);
     return it != _valueToVidCache.end() ? it->second : VID_NOT_REGISTERED;
   }
@@ -108,7 +114,7 @@ public:
   }
 
   VId idStructToVId(llvm::StructType *ST) const {
-    if (!ST) throw std::runtime_error("pass nullptr to idStructToVId");
+    ASSERT(ST, "assertionviolation-id-struct-to-vid-null", "pass nullptr to idStructToVId");
     auto it = _idStructToVidCache.find(ST);
     return it != _idStructToVidCache.end() ? it->second : VID_NOT_REGISTERED;
   }
@@ -156,6 +162,5 @@ public:
   }
 
 private:
-  void traverseModule(std::unique_ptr<llvm::Module> pM);
   static const llvm::Function *parentFunction(const llvm::Value *V);
 };

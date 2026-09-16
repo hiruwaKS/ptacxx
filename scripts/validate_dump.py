@@ -2,7 +2,8 @@
 """Validate a PtaHook dump file written by PtaHook::dump().
 
 Sections recognized, in any order:
-  pts        ::= "pts" NEWLINE ( <key> ( <t> [ "{" <ctx> "}" ] )* )*
+  pts        ::= "pts" NEWLINE record*
+                 record ::= <key> ( ";" <target> ( "," <ctx> )* )*
   basicBlock ::= "basicBlock" NEWLINE ( <vid> ( " " <vid> )* )*   # BBCtxPlusOne vids
   callGraph  ::= "callGraph" NEWLINE ( <record> ( ", " <record> )* )*
                  record ::= <vid> ( " " arg )*        # CGCtxPlusOne records
@@ -76,7 +77,11 @@ def _skip_to_header(lines, idx):
 
 
 def validate_pts(lines, idx, errors, debug):
-    """lines[idx] == 'pts'. Validate until next header or EOF."""
+    """lines[idx] == 'pts'. Validate until next header or EOF.
+
+    v2 record ::= int ( ";" int ( "," int )* )*
+    ';' separates targets, ',' separates a target from its context vids.
+    """
     idx += 1
     while idx < len(lines):
         line = lines[idx].rstrip()
@@ -85,25 +90,14 @@ def validate_pts(lines, idx, errors, debug):
             continue
         if line in HEADERS:
             break
-        toks = line.split()
-        ok = INT.fullmatch(toks[0])  # key
-        j = 1
-        while ok and j < len(toks):
-            if not INT.fullmatch(toks[j]):
-                ok = False
+        segs = line.split(";")
+        ok = INT.fullmatch(segs[0]) is not None  # key: a single int, no ','
+        for seg in segs[1:]:
+            if not ok:
                 break
-            j += 1
-            if j < len(toks) and toks[j] == "{":
-                k = j + 1
-                while k < len(toks) and toks[k] != "}":
-                    if not INT.fullmatch(toks[k]):
-                        ok = False
-                        break
-                    k += 1
-                if ok and k >= len(toks):
-                    ok = False
-                if ok:
-                    j = k + 1
+            toks = seg.split(",")
+            if not all(INT.fullmatch(t) for t in toks):
+                ok = False
         if not ok:
             _e("pts", idx, f"malformed line '{line}'", errors)
             return _skip_to_header(lines, idx)

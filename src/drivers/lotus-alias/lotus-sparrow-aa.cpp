@@ -56,9 +56,29 @@ class SparrowAAQueryServer : public IncluPAWrapper {
 private:
   std::unique_ptr<Andersen> _anders;
 public:
-  SparrowAAQueryServer(IRManager &irm) : IncluPAWrapper(irm) {}
+  SparrowAAQueryServer() = default;
   ~SparrowAAQueryServer() override;
 private:
+  std::string argParseAndInitLLVM(int argc, char **argv) override {
+    pInitLLVM = new InitLLVM(argc, argv);
+    cl::HideUnrelatedOptions({&SparrowAACategory, &AndersenCategory});
+    cl::ParseCommandLineOptions(
+      argc, argv,
+      "Andersen's Pointer Analysis Tool\n\n"
+      "Subset-based, flow-insensitive, field-sensitive pointer analysis.\n\n"
+      "Context Sensitivity:\n"
+      "  --andersen-k-cs=<k>      Select call-site sensitivity (0 <= k <= "
+      "32):\n"
+      "                            0 = context-insensitive (default)\n"
+      "                            1 = 1-CFA\n"
+      "                            2 = 2-CFA\n"
+      "                            ...\n"
+      "                           32 = 32-CFA\n"
+      "                            k > 32 falls back to k=0 (NoCtx)\n");
+    selectGlobalPtsSetImpl(AndersenUseBDDPointsTo ? PtsSetImpl::BDD
+      : PtsSetImpl::SPARSE_BITVECTOR);
+    return InputFilename;
+  }
   void init() override {
     auto &M = _irm.getModule();
     ContextPolicy policy = getSelectedAndersenContextPolicy();
@@ -82,25 +102,5 @@ private:
 SparrowAAQueryServer::~SparrowAAQueryServer() = default;
 
 int main(int argc, char **argv) {
-  ptacxx::options::CGPatchCLIntercept().go(argc, argv);
-  InitLLVM X(argc, argv);
-  cl::HideUnrelatedOptions({&SparrowAACategory, &AndersenCategory});
-  cl::ParseCommandLineOptions(
-    argc, argv,
-    "Andersen's Pointer Analysis Tool\n\n"
-    "Subset-based, flow-insensitive, field-sensitive pointer analysis.\n\n"
-    "Context Sensitivity:\n"
-    "  --andersen-k-cs=<k>      Select call-site sensitivity (0 <= k <= "
-    "32):\n"
-    "                            0 = context-insensitive (default)\n"
-    "                            1 = 1-CFA\n"
-    "                            2 = 2-CFA\n"
-    "                            ...\n"
-    "                           32 = 32-CFA\n"
-    "                            k > 32 falls back to k=0 (NoCtx)\n");
-  selectGlobalPtsSetImpl(AndersenUseBDDPointsTo ? PtsSetImpl::BDD
-    : PtsSetImpl::SPARSE_BITVECTOR);
-  auto irm = IRManager();
-  irm.addMainModule(InputFilename);
-  return SparrowAAQueryServer(irm).run();
+  return SparrowAAQueryServer().run(argc, argv);
 }
