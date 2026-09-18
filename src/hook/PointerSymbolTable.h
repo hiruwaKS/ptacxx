@@ -104,12 +104,12 @@ private:
   std::vector<uint64_t> ScopeAllocaPool;
 
 public:
-  static void init(uint64_t mode);
+  static void init();
   static void stopAndConsume();
   static void dump();
 
 private:
-  PtaHook() = default;
+  PtaHook();
   ~PtaHook() = default;
   PtaHook(const PtaHook &) = delete;
   PtaHook &operator=(const PtaHook &) = delete;

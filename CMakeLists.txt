@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 add_compile_options(
   -Weverything
   -Werror
+  -Wno-switch-default
   -Wno-system-headers
   -Wno-c++98-compat
   -Wno-c++98-compat-extra-semi

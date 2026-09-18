@@ -4,13 +4,13 @@
 #include <cstdlib>
 
 extern "C" {
-  void __hook_init(uint64_t mode);
+  void __hook_init();
   void __hook_push(VId vid, int16_t action, uint64_t ptr, uint64_t size);
   void __hook_dump();
 }
 
-void __hook_init(uint64_t mode) {
-  PtaHook::init(mode);
+void __hook_init() {
+  PtaHook::init();
 }
 
 #if __clang_major__ >= 17

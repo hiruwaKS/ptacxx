@@ -93,7 +93,7 @@ static inline llvm::raw_ostream& printDetailedValueId(llvm::raw_ostream &os,
       break;
     default:
       if (V->getValueID() >= llvm::Value::InstructionVal) {
-        if (auto *I = llvm::dyn_cast<llvm::Instruction>(V))
+        if (llvm::isa<llvm::Instruction>(V))
           os << "Inst";
         else os << "UnknownInst";
       } else os << "Unknown";

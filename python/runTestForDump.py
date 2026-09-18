@@ -34,11 +34,15 @@ ERROR_LABELS = {
     "QUERY_ABORT": "query_abort",
     "INIT_ERROR": "initerror",
     "QUERY_ERROR": "queryerror",
-    "INCONSISTENT": "inconsistent",
     "INIT_OTHER": "init_other",
     "QUERY_OTHER": "query_other",
     "MISSING": "missing",
 }
+
+# Every ptacxx error carries a unique name (`<category>-kebab-detail`, see
+# docs/ErrorUniqueName.csv) as the first token of what(); recover it so any
+# error code is labeled generically instead of special-casing a few.
+ERROR_NAME_RE = re.compile(r"^([a-z][a-z0-9]*(?:-[a-z0-9]+)+)\b")
 
 
 def collect_dumps(root):
@@ -92,22 +96,34 @@ def extract_tag(text, tag):
     return match.group(1).strip() if match else None
 
 
+def error_name(text):
+    """Extract the leading unique error name from an error body, if any."""
+    match = ERROR_NAME_RE.match((text or "").strip())
+    return match.group(1) if match else None
+
+
 def classify_error(proc, lines, result):
     """Split a non-OK exit into init/query-phase segfault/abort/error/other.
 
     `<init>` is emitted only after init() returns, so its presence means the
-    failure happened while serving a query, not during initialization.
+    failure happened while serving a query, not during initialization. The
+    init/query phase stays the status prefix; exceptions additionally carry
+    their unique error name, so every code is reported without special-casing.
     """
     rc = proc.returncode
 
     init_error = extract_tag(proc.stdout, "initerror")
     if init_error is not None:
+        name = error_name(init_error)
+        if name:
+            return f"INIT_{name}", name, init_error
         return "INIT_ERROR", "initerror", init_error
 
     query_error = extract_tag(proc.stdout, "queryerror")
     if query_error is not None:
-        if "analyzererror-pts-test-inconsistent" in query_error:
-            return "INCONSISTENT", "inconsistent", query_error
+        name = error_name(query_error)
+        if name:
+            return f"QUERY_{name}", name, query_error
         return "QUERY_ERROR", "queryerror", query_error
 
     phase = "QUERY" if extract_tag(proc.stdout, "init") is not None else "INIT"

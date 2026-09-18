@@ -93,7 +93,7 @@ VId parseVid(const std::string& vid, IRManager &irm) {
     llvm::SmallDenseSet<VId> notSilenced;
     for (const GlobalEntry &entry : entries) {
       if (notSilenced.count(entry.id)) continue;
-      if (auto *ST = irm.vidToIdStruct(entry.id)) notSilenced.insert(entry.id);
+      if (irm.vidToIdStruct(entry.id)) notSilenced.insert(entry.id);
       else if (auto *value = irm.vidToValue(entry.id)) {
         if (auto GVal = llvm::dyn_cast<llvm::GlobalValue>(value)) {
           if (shouldSilence(GVal->getName().str())) continue;

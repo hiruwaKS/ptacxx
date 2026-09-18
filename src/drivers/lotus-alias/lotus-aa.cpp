@@ -121,8 +121,11 @@ private:
   bool getPointsToSet(Ptr value, PointsToSet &pts) override {
     /// TODO:  use  `getLoadValues` for path-sensitivity, and handle the interprocedural case
     // it ptr is a global variable, we just put itself into the pts
-    if (isa<GlobalVariable>(value)) pts.push_back(value);
-    else if (auto *I = dyn_cast<Instruction>(value)) {
+    if (isa<GlobalValue>(value)) {
+      pts.push_back(value);
+      return true;
+    }
+    if (auto *I = dyn_cast<Instruction>(value)) {
       auto *_intra = _lotusaa->getPtGraph(I->getFunction());
       if (!_intra) return false;
       auto *res = _intra->findPTResult(I, false);

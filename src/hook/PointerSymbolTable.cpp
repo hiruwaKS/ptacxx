@@ -1,10 +1,13 @@
 #include "PointerSymbolTable.h"
 #include "common/Common.h"
-#include "common/Error.h"
 
 #include <stdexcept>
 #include <algorithm>
+#include <charconv>
+#include <fstream>
+#include <iostream>
 #include <span>
+#include <string_view>
 #include <limits>
 #include <csignal>
 #include <cstdlib>
@@ -25,70 +28,97 @@ volatile std::sig_atomic_t g_crashDumped = 0;
   PtaHook::dump();
   _Exit(128 + sig);
 }
+// Flush and dump on a normal exit()/return, so programs that call exit()
+// directly (instead of returning from main) still produce their dump.
+void exitDumpHandler() {
+  PtaHook::stopAndConsume();
+  PtaHook::dump();
+}
+bool parseEnvU64(const char *env, uint64_t &out) {
+  std::string_view sv(env);
+  auto [ptr, ec] = std::from_chars(sv.begin(), sv.end(), out);
+  return ec == std::errc() && ptr == sv.end();
+}
 }  // namespace
 
-void PtaHook::init(uint64_t mode) {
-  auto &instance = Instance();
+PtaHook::PtaHook() {
   std::signal(SIGABRT, crashDumpHandler);
   std::signal(SIGSEGV, crashDumpHandler);
   std::signal(SIGTERM, crashDumpHandler);
-  if (!instance.mode) instance.mode = mode;
+  std::atexit(exitDumpHandler);
 
-  if (const char *kEnv = std::getenv("PTACXX_K")) {
-    char *end = nullptr;
-    const uint64_t parsed = std::strtoull(kEnv, &end, 10);
-    if (end && *end == '\0') {
-      instance.K = static_cast<size_t>(parsed);
-    } else {
-      std::fprintf(stderr, "PtaHook: invalid PTACXX_K '%s', using 0\n", kEnv);
-      instance.K = 0;
+  // The constructor runs when the singleton is first materialized (first
+  // stopAndConsume/dump), so it must not call Instance() again.
+  uint64_t parsedMode = 0;
+  if (const char *modeEnv = std::getenv("PTACXX_MODE")) {
+    if (!parseEnvU64(modeEnv, parsedMode)) {
+      std::cerr << "PtaHook: invalid PTACXX_MODE '" << modeEnv << "', using 0\n";
+      parsedMode = 0;
     }
   } else {
-    instance.K = 0;
+    std::cerr << "PtaHook: PTACXX_MODE is not set, using 0\n";
+  }
+  this->mode = parsedMode;
+
+  if (const char *kEnv = std::getenv("PTACXX_K")) {
+    uint64_t parsed = 0;
+    if (parseEnvU64(kEnv, parsed)) {
+      this->K = static_cast<size_t>(parsed);
+    } else {
+      std::cerr << "PtaHook: invalid PTACXX_K '" << kEnv << "', using 0\n";
+      this->K = 0;
+    }
+  } else {
+    this->K = 0;
   }
 
   if (const char *bbCtxEnv = std::getenv("PTACXX_BB_CTX")) {
-    char *end = nullptr;
-    const uint64_t parsed = std::strtoull(bbCtxEnv, &end, 10);
-    if (end && *end == '\0') {
-      instance.BBCtxPlusOne = static_cast<size_t>(parsed) + 1;
+    uint64_t parsed = 0;
+    if (parseEnvU64(bbCtxEnv, parsed)) {
+      this->BBCtxPlusOne = static_cast<size_t>(parsed) + 1;
     } else {
-      std::fprintf(stderr, "PtaHook: invalid PTACXX_BB_CTX '%s', using 0\n", bbCtxEnv);
-      instance.BBCtxPlusOne = 1;
+      std::cerr << "PtaHook: invalid PTACXX_BB_CTX '" << bbCtxEnv << "', using 0\n";
+      this->BBCtxPlusOne = 1;
     }
   } else {
-    instance.BBCtxPlusOne = 1;
+    this->BBCtxPlusOne = 1;
   }
-  for (size_t i = 0; i < instance.BBCtxPlusOne; ++i)
-    instance.bbRecent.push_back(static_cast<VId>(-1));
+  for (size_t i = 0; i < this->BBCtxPlusOne; ++i)
+    this->bbRecent.push_back(static_cast<VId>(-1));
 
   if (const char *cgCtxEnv = std::getenv("PTACXX_CG_CTX")) {
-    char *end = nullptr;
-    const uint64_t parsed = std::strtoull(cgCtxEnv, &end, 10);
-    if (end && *end == '\0') {
-      instance.CGCtxPlusOne = static_cast<size_t>(parsed) + 1;
+    uint64_t parsed = 0;
+    if (parseEnvU64(cgCtxEnv, parsed)) {
+      this->CGCtxPlusOne = static_cast<size_t>(parsed) + 1;
     } else {
-      std::fprintf(stderr, "PtaHook: invalid PTACXX_CG_CTX '%s', using 0\n", cgCtxEnv);
-      instance.CGCtxPlusOne = 1;
+      std::cerr << "PtaHook: invalid PTACXX_CG_CTX '" << cgCtxEnv << "', using 0\n";
+      this->CGCtxPlusOne = 1;
     }
   } else {
-    instance.CGCtxPlusOne = 1;
+    this->CGCtxPlusOne = 1;
   }
-  for (size_t i = 0; i < instance.CGCtxPlusOne; ++i)
-    instance.cgRecent.push_back({static_cast<VId>(-1), Slice{0, 0}});
+  for (size_t i = 0; i < this->CGCtxPlusOne; ++i)
+    this->cgRecent.push_back({static_cast<VId>(-1), Slice{0, 0}});
+}
+
+void PtaHook::init() {
+  // [deprecated] Move the work to the constructor. Can be deleted when refactoring.
+  (void)Instance();
 }
 
 void PtaHook::stopAndConsume(){
   if (!bufferIndex) return;
-  std::span<PtrRecord> buffer_span(buffer, bufferIndex);
+  std::span<PtrRecord> buffer_span = std::span<PtrRecord>(buffer).first(bufferIndex);
   for (size_t i = 0; i < bufferIndex; ++i) {
     auto &record = buffer_span[i];
     switch (record.action) {
       case PTR_ACTION_ALLOCA: {
         if (!(Instance().mode & MODE_PTR_MASK)) break;
         auto addr = record.ptr;
-        ASSERT(!Instance().scopeStack.back().second.uninitialized(),
-               "assertionviolation-scope-top-uninitialized", "scope top is uninitialized");
+        if (Instance().scopeStack.back().second.uninitialized()) {
+          std::cerr << "PtaHook: scope top is uninitialized\n";
+          std::abort();
+        }
         Instance().ptrToVid[addr] = {
           record.vid, record.size};
         auto newEnd = Instance().ScopeAllocaPool.size();
@@ -249,16 +279,22 @@ void PtaHook::stopAndConsume(){
         break;
       }
       default:
-        ASSERT(false, "assertionviolation-unknown-pointer-action", "unknown action");
+        std::cerr << "PtaHook: unknown action\n";
+        std::abort();
     }
   }
   bufferIndex = 0;
 }
 
 void PtaHook::dump() {
+  // The wrapper calls __hook_dump() before returning from main, and atexit
+  // calls it again; only dump once.
+  static bool dumped = false;
+  if (dumped) return;
+  dumped = true;
   const char *dumpPath = std::getenv("PTACXX_DUMP_PATH");
   if (!dumpPath || !dumpPath[0]) {
-    std::fprintf(stderr, "PtaHook: PTACXX_DUMP_PATH is not set, skip dump\n");
+    std::cerr << "PtaHook: PTACXX_DUMP_PATH is not set, skip dump\n";
     return;
   }
   auto vidToString = [](VId v) {
@@ -268,9 +304,9 @@ void PtaHook::dump() {
 
   if (Instance().mode & MODE_PTR_MASK) {
     std::string path = std::string(dumpPath) + ".pts";
-    FILE *f = fopen(path.c_str(), "w");
+    std::ofstream f(path, std::ios::binary);
     if (!f) {
-      std::fprintf(stderr, "PtaHook: cannot open dump file '%s'\n", path.c_str());
+      std::cerr << "PtaHook: cannot open dump file '" << path << "'\n";
     } else {
       std::string buf;
       buf.reserve(1024*1024*2);
@@ -291,19 +327,18 @@ void PtaHook::dump() {
         }
         buf += "\n";
         if (buf.size() >= FLUSH_THRESHOLD) {
-          fwrite(buf.data(), 1, buf.size(), f);
+          f.write(buf.data(), static_cast<std::streamsize>(buf.size()));
           buf.clear();
         }
       }
-      if (!buf.empty()) fwrite(buf.data(), 1, buf.size(), f);
-      fclose(f);
+      if (!buf.empty()) f.write(buf.data(), static_cast<std::streamsize>(buf.size()));
     }
   }
   if (Instance().mode & MODE_BB_MASK) {
     std::string path = std::string(dumpPath) + ".bb";
-    FILE *f = fopen(path.c_str(), "w");
+    std::ofstream f(path, std::ios::binary);
     if (!f) {
-      std::fprintf(stderr, "PtaHook: cannot open dump file '%s'\n", path.c_str());
+      std::cerr << "PtaHook: cannot open dump file '" << path << "'\n";
     } else {
       std::string buf;
       buf.reserve(1024*1024*2);
@@ -318,19 +353,18 @@ void PtaHook::dump() {
         }
         buf += "\n";
         if (buf.size() >= FLUSH_THRESHOLD) {
-          fwrite(buf.data(), 1, buf.size(), f);
+          f.write(buf.data(), static_cast<std::streamsize>(buf.size()));
           buf.clear();
         }
       }
-      if (!buf.empty()) fwrite(buf.data(), 1, buf.size(), f);
-      fclose(f);
+      if (!buf.empty()) f.write(buf.data(), static_cast<std::streamsize>(buf.size()));
     }
   }
   if (Instance().mode & MODE_CG_MASK) {
     std::string path = std::string(dumpPath) + ".cg";
-    FILE *f = fopen(path.c_str(), "w");
+    std::ofstream f(path, std::ios::binary);
     if (!f) {
-      std::fprintf(stderr, "PtaHook: cannot open dump file '%s'\n", path.c_str());
+      std::cerr << "PtaHook: cannot open dump file '" << path << "'\n";
     } else {
       std::string buf;
       buf.reserve(1024*1024*2);
@@ -362,12 +396,11 @@ void PtaHook::dump() {
         }
         buf += "\n";
         if (buf.size() >= FLUSH_THRESHOLD) {
-          fwrite(buf.data(), 1, buf.size(), f);
+          f.write(buf.data(), static_cast<std::streamsize>(buf.size()));
           buf.clear();
         }
       }
-      if (!buf.empty()) fwrite(buf.data(), 1, buf.size(), f);
-      fclose(f);
+      if (!buf.empty()) f.write(buf.data(), static_cast<std::streamsize>(buf.size()));
     }
   }
 }

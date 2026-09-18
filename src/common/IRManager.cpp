@@ -340,7 +340,7 @@ GlobalEntry IRManager::getGlobal(const std::string &name) const {
     const GlobalEntry &entry = *it;
     if (!entry.isRealName || entry.name != name)
       continue;
-    if (llvm::Value *value = vidToValue(entry.id)) {
+    if (vidToValue(entry.id)) {
       if (matched) {
         throw ptacxx::VidNotFound("vidnotfound-get-global-ambiguous",
                                   "ambiguous global name '" + name + "'");
@@ -530,7 +530,7 @@ llvm::StructType *IRManager::getCtorStructType(llvm::Function *F) const {
   size_t len = 0;
   char *cls = demangler.getFunctionDeclContextName(nullptr, &len);
   if (!cls) return nullptr;
-  std::string clsName(cls, std::strlen(cls));
+  std::string clsName(cls, len);
   std::free(cls);
   for (auto &ge : listGlobal(clsName))
     if (auto *ST = vidToIdStruct(ge.id))

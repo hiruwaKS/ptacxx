@@ -6,7 +6,8 @@
 // functions/basic blocks; they call the hook runtime (__hook_init,
 // __hook_push, __hook_dump, __register_globals), which is provided by
 // libhook.so. main() is renamed to __orig_main and replaced by a wrapper
-// that calls __hook_init(mode), runs the original main, then __hook_dump().
+// that calls __hook_init(), runs the original main, then __hook_dump().
+// The runtime mode is no longer passed in: libhook.so reads PTACXX_MODE.
 //
 // Usage:
 //   instrument <ir-path> -o <out.ll|out.bc> [-mode-ptr] [-mode-bb] [-mode-cg]
@@ -22,6 +23,7 @@
 //   PTACXX_DUMP_PATH=<prefix> ./app
 //
 // Runtime environment (read by libhook.so):
+//   PTACXX_MODE       runtime mode bitmask (1=ptr, 2=bb, 4=cg)
 //   PTACXX_DUMP_PATH  dump prefix; writes <prefix>.pts/.bb/.cg per mode
 //   PTACXX_K          context sensitivity for -mode-ptr
 //   PTACXX_BB_CTX     context window for -mode-bb
@@ -91,7 +93,7 @@ int main(int argc, char *argv[]) {
   auto *I16Ty = Type::getInt16Ty(Ctx);
   auto *I32Ty = Type::getInt32Ty(Ctx);
   auto *I64Ty = Type::getInt64Ty(Ctx);
-  auto *hookInitTy = FunctionType::get(VoidTy, {I64Ty}, false);
+  auto *hookInitTy = FunctionType::get(VoidTy, {}, false);
   auto *hookPushTy = FunctionType::get(VoidTy, {I32Ty, I16Ty, I64Ty, I64Ty}, false);
   auto *hookDumpTy = FunctionType::get(VoidTy, {}, false);
   auto *registerGlobalsTy = FunctionType::get(I32Ty, {}, false);
@@ -295,7 +297,7 @@ int main(int argc, char *argv[]) {
   // 2.5 wrap main
 
   // int main(int argc, char **argv) {
-  //   __hook_init(mode);
+  //   __hook_init();
   //   __registerGlobals();
   //   int result = __orig_main(argc, argv);
   //   __hook_dump();
@@ -308,8 +310,7 @@ int main(int argc, char *argv[]) {
   origMainFn->setName("__orig_main");
   auto *newMainFn = declFn(M, "main", mainTy);
   auto *entryBB = BasicBlock::Create(Ctx, "", newMainFn);
-  auto Mode = ConstantInt::get(I64Ty, (ModePtr ? MODE_PTR_MASK : 0) | (ModeBB ? MODE_BB_MASK : 0) | (ModeCG ? MODE_CG_MASK : 0));
-  CallInst::Create(hookInitFn, {Mode}, "", entryBB);
+  CallInst::Create(hookInitFn, {}, "", entryBB);
   if (ModePtr) CallInst::Create(registerGlobalsFn, "", entryBB);
   llvm::SmallVector<llvm::Value *> origArgs;
   for (auto &arg : newMainFn->args())
