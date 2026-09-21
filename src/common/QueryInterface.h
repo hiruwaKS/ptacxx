@@ -54,6 +54,7 @@ struct PtIn        { Ptr ptr; AllocSite obj; };
 /// File parsing lives in QueryInterface; the wrapper only consumes the array.
 struct PtsTestIn   {
   std::vector<std::pair<Ptr, std::vector<VId>>> records;
+  size_t unresolved = 0; // edges whose key vid did not resolve
   bool consistent = false;
 };
 struct ReachableIn { llvm::Function *from; llvm::Function *to; bool ignoreUnknown; };
@@ -75,9 +76,9 @@ using PAQuery = std::variant<
 struct AliasOut     { PTAliasResult result; };
 struct PtsOut       { PointsToSetView targets; };
 struct PtsTestOut   {
-  size_t total;
+  size_t passes;
   size_t fails;
-  std::vector<std::pair<VId, VId>> firstFails;
+  size_t errors;
 };
 struct AliasSetOut  { std::set<llvm::Value *> * ptrs; };
 struct PtOut        { ModalityResult result; };

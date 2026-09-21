@@ -17,6 +17,7 @@ namespace ptacxx::options {
 /// @note this will gather all options that used in PAWrapper, defined dispersedly
 extern std::string CGPatchPath;
 extern std::string NoteFolderPath;
+extern std::string OutputIRPath;
 bool CGPatchCLIntercept::interceptOption(const std::string &key,
                                          const std::string &value) {
   if (key == "cgpatch-path") {
@@ -25,6 +26,10 @@ bool CGPatchCLIntercept::interceptOption(const std::string &key,
   }
   if (key == "note-folder") {
     NoteFolderPath = value;
+    return true;
+  }
+  if (key == "output-ir") {
+    OutputIRPath = value;
     return true;
   }
   return false;
@@ -141,42 +146,44 @@ std::string PAWrapper::handleQueryWrapper(const std::string &req) {
         return PtOut{ mayPointTo(getPointsToSetCached(arg.ptr), arg.obj) ? ResultMay: ResultNo };
       }
       if constexpr (std::is_same_v<T, PtsTestIn>) {
-        // Each dumped edge (ptr -> target) is one check: it FAILs when the
-        // analyzer does not report `ptr` may point to `target` (missed edge).
-        // The pair query is analyzer-specific: Inclu tests set membership,
-        // Unifi uses its alias query (avoiding a scan of all allocation sites).
-        size_t total = 0;
+        // Each dumped edge (ptr -> target) is one check: FAIL when the analyzer
+        // does not report `ptr` may point to `target`, ERROR when a vid does not
+        // resolve. The pair query is analyzer-specific: Inclu tests set
+        // membership, Unifi uses its alias query.
+        size_t passes = 0;
         size_t fails = 0;
-        std::vector<std::pair<VId, VId>> firstFails;
+        size_t errors = arg.unresolved;
         for (const auto &[ptr, targets] : arg.records) {
-          const VId keyVid = _irm.valueToVId(ptr);
           for (VId t : targets) {
-            ++total;
             llvm::Value *target = _irm.vidToValue(t);
-            if (target) {
-              const auto fast = getPointToResultCached(ptr, target);
-              if (arg.consistent) {
-                const auto slow = getPointToResultCachedSlow(ptr, target);
-                const bool fastNo = fast == llvm::AliasResult::NoAlias;
-                const bool slowNo = slow == llvm::AliasResult::NoAlias;
-                if (fastNo != slowNo)
-                  throw ptacxx::AnalyzerError(
-                      "analyzererror-pts-test-inconsistent",
-                      "pts-test inconsistent: ptr " + std::to_string(keyVid) +
-                          " target " + std::to_string(t) + " fast=" +
-                          (fastNo ? "No" : "May") + " slow=" +
-                          (slowNo ? "No" : "May"));
-                if (!fastNo) continue;
-              } else if (fast != llvm::AliasResult::NoAlias) {
-                continue;
-              }
+            if (!target) {
+              ++errors;
+              continue;
             }
-            ++fails;
-            if (fails <= 5)
-              firstFails.emplace_back(keyVid, t);
+            const auto fast = getPointToResultCached(ptr, target);
+            if (arg.consistent) {
+              const auto slow = getPointToResultCachedSlow(ptr, target);
+              const bool fastNo = fast == llvm::AliasResult::NoAlias;
+              const bool slowNo = slow == llvm::AliasResult::NoAlias;
+              if (fastNo != slowNo)
+                throw ptacxx::AnalyzerError(
+                    "analyzererror-pts-test-inconsistent",
+                    "pts-test inconsistent: ptr " +
+                        std::to_string(_irm.valueToVId(ptr)) + " target " +
+                        std::to_string(t) + " fast=" + (fastNo ? "No" : "May") +
+                        " slow=" + (slowNo ? "No" : "May"));
+              if (fastNo)
+                ++fails;
+              else
+                ++passes;
+            } else if (fast != llvm::AliasResult::NoAlias) {
+              ++passes;
+            } else {
+              ++fails;
+            }
           }
         }
-        return PtsTestOut{total, fails, std::move(firstFails)};
+        return PtsTestOut{passes, fails, errors};
       }
       if constexpr (std::is_same_v<T, AliasIn>) {
         return AliasOut{ getAliasResultCached(arg.a, arg.b) };
@@ -631,6 +638,8 @@ int PAWrapper::run(int argc, char **argv) {
     auto index = sw.record();
     init();
     auto analysis = sw.record();
+    if (!ptacxx::options::OutputIRPath.empty())
+      _irm.dumpModule(ptacxx::options::OutputIRPath);
     emitInit(parse, load, index, analysis);
   } catch (const std::exception &e) {
     emitInitError(e);

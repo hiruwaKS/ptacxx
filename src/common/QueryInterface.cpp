@@ -22,6 +22,8 @@ extern std::string CGPatchPath;
 std::string CGPatchPath;
 extern std::string NoteFolderPath;
 std::string NoteFolderPath;
+extern std::string OutputIRPath;
+std::string OutputIRPath;
 }
 LLVM_CL_IGNORE_WARNINGS_END
 
@@ -621,6 +623,7 @@ PAQuery parse(const std::string &input, IRManager &irm) {
         throw ptacxx::FileSystemError("filesystemerror-pts-dump-open-failed",
                                       "cannot open pts dump '" + pathStr + "'");
       std::vector<std::pair<Ptr, std::vector<VId>>> records;
+      size_t unresolved = 0;
       std::string line;
       // The dump starts with a "pts" magic line; check and ignore it.
       if (std::getline(in, line) && line != "pts")
@@ -638,8 +641,6 @@ PAQuery parse(const std::string &input, IRManager &irm) {
           start = pos + 1;
         }
         if (segs.empty() || segs[0].empty()) continue;
-        Ptr ptr = irm.vidToValue(parseVid(segs[0], irm));
-        if (!ptr) continue;
         std::vector<VId> targets;
         for (size_t i = 1; i < segs.size(); ++i) {
           if (segs[i].empty()) continue;
@@ -647,9 +648,14 @@ PAQuery parse(const std::string &input, IRManager &irm) {
           const std::string tstr = segs[i].substr(0, comma);
           targets.push_back(parseVid(tstr, irm));
         }
+        Ptr ptr = irm.vidToValue(parseVid(segs[0], irm));
+        if (!ptr) {
+          unresolved += targets.size();
+          continue;
+        }
         records.emplace_back(ptr, std::move(targets));
       }
-      return PAQuery{PtsTestIn{std::move(records), consistent}};
+      return PAQuery{PtsTestIn{std::move(records), unresolved, consistent}};
     }
 
     if (cmd == "reach") {
@@ -1243,19 +1249,11 @@ std::string responseToString(const PAResponse &response, IRManager &irm) {
     }
 
     if constexpr (std::is_same_v<T, PtsTestOut>) {
-      const unsigned rateHundredths =
-          arg.total ? static_cast<unsigned>(
-                          10000.0 * static_cast<double>(arg.fails) /
-                              static_cast<double>(arg.total) + 0.5)
-                    : 0;
       std::string buf;
       llvm::raw_string_ostream os(buf);
-      os << "Fail=" << arg.fails << "/" << arg.total << " ("
-         << (rateHundredths / 100) << "."
-         << (rateHundredths % 100 < 10 ? "0" : "") << (rateHundredths % 100)
-         << "%)\n";
-      for (const auto &[key, target] : arg.firstFails)
-        os << key << " " << target << "\n";
+      os << "Pass=" << arg.passes << "\n";
+      os << "Fail=" << arg.fails << "\n";
+      os << "Error=" << arg.errors << "\n";
       os.flush();
       return buf;
     }
